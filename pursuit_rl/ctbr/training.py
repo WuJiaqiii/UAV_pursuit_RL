@@ -13,6 +13,7 @@ from .checkpoint import new_model, save, load, write_json, source_fingerprint
 from .environment import CTBRBatch
 from .control import teacher
 from .evaluation import evaluate, score, improved
+from .errors import ExperimentGateError
 
 
 def emit(root, event, **fields):
@@ -36,11 +37,12 @@ def imitation_data(c, model=None, seed=10000):
     labels = []
     tick = 0
     count = 0
+    segment_ticks = round(c["training"]["bc_segment_seconds"] / c["physics"]["dt"])
     while count < c["training"]["bc_samples"]:
         target = teacher(env)
         if tick % c["training"]["bc_stride"] == 0:
             clean = obs.clone()
-            clean[:, 32 : 32 + 4 * c["policy"]["history_steps"]] = 0
+            clean[:, 21:] = 0
             states.append(clean)
             labels.append(target.clone())
             count += env.n
@@ -54,6 +56,8 @@ def imitation_data(c, model=None, seed=10000):
         if bool(done.any()):
             obs, priv = env.reset(done)
         tick += 1
+        if tick % segment_ticks == 0:
+            obs, priv = env.reset()
     return (
         torch.cat(states)[: c["training"]["bc_samples"]],
         torch.cat(labels)[: c["training"]["bc_samples"]],
@@ -62,20 +66,48 @@ def imitation_data(c, model=None, seed=10000):
 
 
 def fit_actor(model, data, updates, batch_size):
+    """Condition supervised regression, then fold normalization into the first layer.
+
+    Only the teacher's sufficient current kinematics are used. Actuator state,
+    time, boundaries, goals and raw-action memory are excluded to prevent
+    shortcuts. PPO still receives the complete original observation.
+    """
     x, y = data
+    first = model.actor[0]
+    x = x.clone()
+    x[:, 21:] = 0
+    center = x.mean(0)
+    scale = x.std(0, unbiased=False).clamp_min(0.01)
+    scale[21:] = 1
+    with torch.no_grad():
+        first.weight[:, 21:] = 0
+        original = first.weight.clone()
+        first.weight.mul_(scale)
+        first.bias.add_(original @ center)
+    normalized = (x - center) / scale
+    output_scale = y.std(0, unbiased=False).clamp_min(0.02)
     opt = torch.optim.Adam(model.actor.parameters(), lr=1e-3)
     loss = None
-    for _ in range(updates):
-        ids = torch.randint(len(x), (min(batch_size, len(x)),), device=model.device)
-        loss = F.mse_loss(torch.tanh(model.actor(x[ids])), y[ids])
-        if not bool(torch.isfinite(loss)):
-            raise FloatingPointError("Nonfinite imitation loss")
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            model.actor.parameters(), 1.0, error_if_nonfinite=True
-        )
-        opt.step()
+    try:
+        for _ in range(updates):
+            ids = torch.randint(len(x), (min(batch_size, len(x)),), device=model.device)
+            loss = (
+                ((torch.tanh(model.actor(normalized[ids])) - y[ids]) / output_scale)
+                .square()
+                .mean()
+            )
+            if not bool(torch.isfinite(loss)):
+                raise FloatingPointError("Nonfinite imitation loss")
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                model.actor.parameters(), 1.0, error_if_nonfinite=True
+            )
+            opt.step()
+    finally:
+        with torch.no_grad():
+            first.weight.div_(scale)
+            first.bias.sub_(first.weight @ center)
     return float(loss.detach()) if loss is not None else None
 
 
@@ -83,8 +115,18 @@ def fit_critic(model, data, updates, batch_size):
     x, y = data
     with torch.no_grad():
         before = float((model.values_tensor(x) - y).square().mean().sqrt())
+    # Episode starts are only one of ~1000 MC samples in a 20 s flight.
+    # Oversample them so acquisition-state value is not sacrificed to steady states.
+    starts = (x[:, 31] >= x[:, 31].max() - 1e-8).nonzero(as_tuple=True)[0]
+    size = min(batch_size, len(x))
+    n_start = max(1, size // 8)
     for _ in range(updates):
-        ids = torch.randint(len(x), (min(batch_size, len(x)),), device=model.device)
+        ids = torch.cat(
+            (
+                torch.randint(len(x), (size - n_start,), device=model.device),
+                starts[torch.randint(len(starts), (n_start,), device=model.device)],
+            )
+        )
         loss = F.huber_loss(model.critic(x[ids]).squeeze(-1), y[ids])
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError("Nonfinite critic fit")
@@ -97,8 +139,35 @@ def fit_critic(model, data, updates, batch_size):
     with torch.no_grad():
         after = float((model.values_tensor(x) - y).square().mean().sqrt())
     return dict(
-        samples=len(y), updates=updates, fit_rmse_before=before, fit_rmse_after=after
+        samples=len(y),
+        updates=updates,
+        fit_rmse_before=before,
+        fit_rmse_after=after,
+        initial_state_samples=len(starts),
+        initial_state_batch_fraction=n_start / size,
     )
+
+
+def initialization_validation(model, c, root, progress, label):
+    report, _ = evaluate(
+        model,
+        c,
+        c["training"]["initialization_episodes"],
+        c["training"]["validation_seed"],
+    )
+    progress["validation_physics_steps"] += sum(
+        round(e["time"] / c["physics"]["dt"]) for e in report["episodes_detail"]
+    )
+    write_json(root / f"initialization_{label}.json", report)
+    emit(
+        root,
+        "initialization_validation",
+        label=label,
+        success_rate=report["success_rate"],
+        tail_rmse=report["mean_tail_position_rmse"],
+        failures=report["failures"],
+    )
+    return report
 
 
 def train(c, out, resume=None, init_from=None):
@@ -113,12 +182,16 @@ def train(c, out, resume=None, init_from=None):
     root.mkdir(parents=True, exist_ok=True)
     ckpt = root / "checkpoints"
     ckpt.mkdir(exist_ok=True)
+    if not resume:
+        write_json(root / "config.json", c)
     torch.manual_seed(c["seed"])
     progress = dict(
         physics_steps=0,
         decision_transitions=0,
         ppo_updates=0,
         bc_updates=0,
+        accepted_bc_updates=0,
+        rejected_dagger_rounds=0,
         imitation_physics_steps=0,
         mc_physics_steps=0,
         validation_physics_steps=0,
@@ -180,33 +253,62 @@ def train(c, out, resume=None, init_from=None):
             origin = "transfer_initial"
             del parent
             if tr["transfer_dagger_updates"]:
+                prior = initialization_validation(
+                    model, c, root, progress, "transfer_before"
+                )
+                actor_before = {
+                    k: v.detach().clone() for k, v in model.actor.state_dict().items()
+                }
                 x, y, interactions = imitation_data(c, model, c["seed"] + 30000)
                 loss = fit_actor(
                     model, (x, y), tr["transfer_dagger_updates"], tr["batch_size"]
                 )
                 progress["bc_updates"] += tr["transfer_dagger_updates"]
                 progress["imitation_physics_steps"] += interactions
-                origin = "transfer_dagger_initial"
+                candidate = initialization_validation(
+                    model, c, root, progress, "transfer_after"
+                )
+                accepted = improved(candidate, score(prior))
+                if accepted:
+                    origin = "transfer_dagger_initial"
+                    progress["accepted_bc_updates"] += tr["transfer_dagger_updates"]
+                else:
+                    model.actor.load_state_dict(actor_before)
+                    progress["rejected_dagger_rounds"] += 1
                 emit(
                     root,
                     "transfer_dagger",
                     updates=tr["transfer_dagger_updates"],
                     samples=len(x),
                     loss=loss,
+                    accepted=accepted,
+                    loss_space="standardized_action_mse",
                 )
                 del x, y
         else:
             origin = "bc_initial" if tr["bc_updates"] else "random_initial"
-            # All raw-action history is unavailable in teacher regression.
+            # The teacher uses only current kinematics (first 21 features).
             with torch.no_grad():
-                model.actor[0].weight[:, 32 : 32 + 4 * c["policy"]["history_steps"]] = 0
+                model.actor[0].weight[:, 21:] = 0
             if tr["bc_updates"]:
                 x, y, interactions = imitation_data(c, seed=c["seed"] + 10000)
                 loss = fit_actor(model, (x, y), tr["bc_updates"], tr["batch_size"])
                 progress["bc_updates"] += tr["bc_updates"]
+                progress["accepted_bc_updates"] += tr["bc_updates"]
                 progress["imitation_physics_steps"] += interactions
-                emit(root, "bc", loss=loss, samples=len(x))
+                emit(
+                    root,
+                    "bc",
+                    loss=loss,
+                    samples=len(x),
+                    loss_space="standardized_action_mse",
+                )
+                prior = initialization_validation(model, c, root, progress, "bc")
                 for i in range(tr["dagger_rounds"]):
+                    actor_before = {
+                        k: v.detach().clone()
+                        for k, v in model.actor.state_dict().items()
+                    }
                     dx, dy, interactions = imitation_data(
                         c, model, c["seed"] + 20000 + i
                     )
@@ -217,7 +319,26 @@ def train(c, out, resume=None, init_from=None):
                     )
                     progress["bc_updates"] += tr["dagger_updates"]
                     progress["imitation_physics_steps"] += interactions
-                    emit(root, "dagger", round=i + 1, loss=loss, samples=len(x))
+                    candidate = initialization_validation(
+                        model, c, root, progress, f"dagger_{i+1}"
+                    )
+                    accepted = improved(candidate, score(prior))
+                    if accepted:
+                        prior = candidate
+                        origin = "bc_dagger_initial"
+                        progress["accepted_bc_updates"] += tr["dagger_updates"]
+                    else:
+                        model.actor.load_state_dict(actor_before)
+                        progress["rejected_dagger_rounds"] += 1
+                    emit(
+                        root,
+                        "dagger",
+                        round=i + 1,
+                        loss=loss,
+                        samples=len(x),
+                        accepted=accepted,
+                        loss_space="standardized_action_mse",
+                    )
                 del x, y
         calibration, data = evaluate(
             model,
@@ -267,6 +388,32 @@ def train(c, out, resume=None, init_from=None):
             success_rate=initial["success_rate"],
             tail_rmse=initial["mean_tail_position_rmse"],
         )
+    if (
+        not init_from
+        and progress["ppo_updates"] == 0
+        and progress["parent"] is None
+        and tr["bc_updates"]
+    ):
+        initial = json.loads((root / "initial_validation.json").read_text())
+    if (
+        not init_from
+        and progress["ppo_updates"] == 0
+        and progress["parent"] is None
+        and tr["bc_updates"]
+        and initial["success_rate"] < tr["initialization_success_floor"]
+    ):
+        details = dict(
+            event="initialization_gate_failed",
+            phase=c["task"]["name"],
+            success_rate=initial["success_rate"],
+            minimum_success=tr["initialization_success_floor"],
+            failures=initial["failures"],
+            report=str(root / "initial_validation.json"),
+            checkpoint=str(ckpt / "initial.pt"),
+            message="Initialization failed full-episode validation; PPO was not started. Fix initialization or use a new explicitly configured experiment.",
+        )
+        write_json(root / "gate_failure.json", details)
+        raise ExperimentGateError(details)
     write_json(root / "config.json", c)
     env = CTBRBatch(c, seed=c["seed"] + 7919 * progress["ppo_updates"])
     obs, priv = env.observe()

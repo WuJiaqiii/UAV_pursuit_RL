@@ -59,6 +59,9 @@ DEFAULT = {
         "dagger_rounds": 1,
         "dagger_updates": 500,
         "bc_stride": 20,
+        "bc_segment_seconds": 0.5,
+        "initialization_episodes": 32,
+        "initialization_success_floor": 0.9,
         "save_every_updates": 1,
         "transfer_dagger_updates": 0,
     },
@@ -191,12 +194,26 @@ def validate(c):
         "bc_samples",
         "bc_stride",
         "save_every_updates",
+        "initialization_episodes",
     ):
         if type(tr[k]) is not int or tr[k] < 1:
             raise ValueError(f"Invalid training.{k}")
     for k in ("actor_lr", "critic_lr", "discount_time_s", "advantage_time_s"):
         if tr[k] <= 0:
             raise ValueError(f"Invalid training.{k}")
+    if (
+        tr["bc_segment_seconds"] <= 0
+        or not 0 <= tr["initialization_success_floor"] <= 1
+    ):
+        raise ValueError("Invalid initialization segment or success floor")
+    if (
+        abs(
+            round(tr["bc_segment_seconds"] / p["dt"]) * p["dt"]
+            - tr["bc_segment_seconds"]
+        )
+        > 1e-9
+    ):
+        raise ValueError("BC segment must be an integer number of physics ticks")
     if tr["advantage_time_s"] > tr["discount_time_s"]:
         raise ValueError("GAE lambda would exceed one")
     for k in ("distance", "speed", "switch_interval"):

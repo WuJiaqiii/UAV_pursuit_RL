@@ -8,6 +8,7 @@ from .config import load as config_load
 from .checkpoint import load, write_json
 from .training import train
 from .evaluation import evaluate
+from .errors import ExperimentGateError
 
 
 def run(
@@ -93,6 +94,8 @@ def run(
         passed = current["success_rate"] >= minimum_success and all(
             r["success_rate"] >= minimum_success for r in retained
         )
+        if not passed:
+            status = "failed_gate"
         row = dict(
             phase=phase["name"],
             passed=passed,
@@ -114,9 +117,19 @@ def run(
             ),
         )
         if not passed:
-            raise RuntimeError(
-                f"{phase['name']} failed current-task or retained-skill gate; results preserved"
+            details = dict(
+                event="curriculum_gate_failed",
+                phase=phase["name"],
+                success_rate=current["success_rate"],
+                minimum_success=minimum_success,
+                failures=current["failures"],
+                retention=retained,
+                report=str(directory / "gate_current.json"),
+                checkpoint=str(best),
+                message=f"{phase['name']}: current success {current['success_rate']:.1%}, required {minimum_success:.1%}; check current-task and retained-skill reports.",
             )
+            write_json(directory / "gate_failure.json", details)
+            raise ExperimentGateError(details)
         if phase.get("retention_anchor", False):
             sentinels.append(phase)
         parent = best

@@ -1,6 +1,21 @@
-# UAV pursuit RL · 6.9 · 直接 CTBR
+# UAV pursuit RL · 6.9.1 · 直接 CTBR
 
 这一分支将目标统一为：网络每 1 ms 输出 collective thrust 与三个 body rates，先学会持续飞行，再学会持续追踪，最终追踪随机高机动目标。物理积分与策略决策均为 1 kHz。它是一条需要正式训练验证的新实验路线，尚不能据此宣称追踪失效已经解决。
+
+## 6.9.1：修复基础悬停初始化
+
+服务器结果显示原版在 PPO 前就已失稳：seed 42/43 初始验证均为 0/64。此版本修复监督数据过度集中于平衡状态、输入/输出量纲导致的拟合偏置，以及 DAgger 不经闭环考核就覆盖模型的问题。每 0.5 秒重新采样恢复过程；BC 只使用教师依赖的前 21 维运动学特征，做输入标准化与分动作通道的损失平衡，训练后将标准化精确折回第一层，部署观察/动作接口保持一致。
+
+BC/DAgger 均保存完整任务对照，候选没有足够改善就保留前一模型。冷启动的 BC 初始化默认要求完整任务成功率≥90%，不合格时不启动 PPO。课程或初始化门槛失败会输出结构化诊断并以状态码 2 退出；真实软件异常仍显示 traceback。
+
+末尾窗口未完整观测时，末尾 RMSE 显示 null/N/A；报告同时给出完整窗口样本数，避免把早期失败的空窗口计作零误差。MC 预热额外采样回合初始状态，避免长回合中罕见的初始状态估值被忽略。
+
+请使用新的输出目录。v690 checkpoint 仍可读取评估；旧源码实验不能直接 resume 成新实验。可先只验证初始化：
+
+```bash
+python main.py train --config configs/ctbr/01_hover_small.json --device cuda \
+  --physics-steps 0 --out runs/ctbr_v691_precheck --seed 42
+```
 
 ## 安装与运行
 
@@ -18,7 +33,7 @@ python main.py curriculum --out runs/ctbr_seed42 --device cuda --seed 42 \
   --phases 01_hover_small
 
 # 顺序运行三种训练种子、全部十阶段与最终独立种子评估。
-bash scripts/run_ctbr_curriculum.sh runs/ctbr_v690
+bash scripts/run_ctbr_curriculum.sh runs/ctbr_v691
 ```
 
 脚本默认每阶段 2,000 万条 **PPO 物理转移**、64 个课程门槛样本、256 个最终测试样本。默认 32 个环境，因此每阶段每环境约 625 秒，足以经历多个完整任务。BC、MC 校准和验证还会额外消耗交互，分别计数。总算力需求应以服务器实测速率估算。

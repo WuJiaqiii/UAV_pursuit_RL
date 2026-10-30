@@ -32,6 +32,7 @@
     "critic_updates": 2,
     "mc_episodes": 2,
     "validation_episodes": 2,
-    "validation_every": 128
+    "validation_every": 128,
+    "initialization_episodes": 2
   }
 }
