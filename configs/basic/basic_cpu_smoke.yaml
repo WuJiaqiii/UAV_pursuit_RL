@@ -1,0 +1,15 @@
+# Very short CPU functional smoke, NOT a convergence experiment.
+extends: basic_stage0_1khz.yaml
+device: cpu
+simulation_backend: torch
+training:
+  num_envs: 2
+  n_steps: 8
+  batch_size: 16
+  epochs: 1
+  total_steps: 16
+  eval_every: 16
+  eval_episodes: 2
+stages:
+  stage0:
+    time: 0.01

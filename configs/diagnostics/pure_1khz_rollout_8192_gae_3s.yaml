@@ -1,0 +1,4 @@
+# Combined candidate, to run after the two separate comparisons.
+extends: pure_1khz_rollout_8192.yaml
+training:
+  gae_lambda: 0.9996867257539658

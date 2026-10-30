@@ -1,0 +1,3 @@
+extends: s0_standard_pd02.yaml
+reward:
+  w_progress: 0.0

@@ -1,0 +1,41 @@
+{
+  "schema": "pursuit-curriculum-plan-v1",
+  "phases": [
+    {
+      "name": "01_singer_05",
+      "profile": "01_singer_05.json"
+    },
+    {
+      "name": "02_singer_1",
+      "profile": "02_singer_1.json"
+    },
+    {
+      "name": "03_singer_2",
+      "profile": "03_singer_2.json"
+    },
+    {
+      "name": "04_dubins_2",
+      "profile": "04_dubins_2.json"
+    },
+    {
+      "name": "05_hybrid_2",
+      "profile": "05_hybrid_2.json"
+    },
+    {
+      "name": "06_mixed_near",
+      "profile": "06_mixed_near.json"
+    },
+    {
+      "name": "07_mixed_distance60",
+      "profile": "07_mixed_distance60.json"
+    },
+    {
+      "name": "08_mixed_distance100",
+      "profile": "08_mixed_distance100.json"
+    },
+    {
+      "name": "09_mixed_speed8",
+      "profile": "09_mixed_speed8.json"
+    }
+  ]
+}

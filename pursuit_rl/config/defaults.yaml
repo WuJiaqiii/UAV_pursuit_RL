@@ -1,0 +1,207 @@
+seed: 42
+device: cpu
+simulation_backend: numpy  # numpy legacy; torch enables device-resident batched physics
+torch_threads: 2
+observation:
+  use_cpa: true
+  boundary_features: false
+  target_accel_scale: 7.0
+physics:
+  dt: 0.05
+  policy_interval_steps: 1  # 1 => fresh PPO action each physics tick
+  substeps: 5
+  gravity: 9.81
+  hover_thrust: 9.81
+  thrust_min: 0.0
+  thrust_max: 30.0
+  thrust_delta: 15.0
+  rate_xy: 1.2
+  rate_yaw: 1.0
+  tau_thrust: 0.1
+  tau_rate: 0.13
+  drag: 0.007
+  max_speed: 30.0
+  max_tilt_deg: 65.0
+  workspace_xy: 600.0
+  min_altitude: 4.0
+  max_altitude: 230.0
+target:
+  max_speed: 25.0
+  max_accel: 7.0
+  singer_alpha: 1.0
+  singer_sigma: 3.0
+  turn_rate: 0.45
+  maneuver_interval:
+  - 1.5
+  - 5.0
+  hybrid_pattern: random
+  hybrid_smoothing_s: 0.4
+  strict_speed_ceiling: false
+  target_workspace_xy: 450.0
+  target_min_altitude: 30.0
+  target_max_altitude: 190.0
+reward:
+  distance_scale: 500.0
+  speed_scale: 30.0
+  cpa_horizon: 2.0
+  w_distance: 0.5
+  w_progress: 0.0  # Optional dense positive approach signal, disabled for legacy tasks
+  progress_scale_m: 20.0
+  w_closing: 0.25
+  w_cpa: 0.25
+  w_action_delta: 0.01
+  w_time: 0.03
+  w_speed_risk: 0.05
+  w_tilt_risk: 0.05
+  w_boundary_risk: 0.0
+  w_predictive_risk: 0.0
+  soft_speed_frac: 0.8
+  soft_tilt_frac: 0.8
+  boundary_soft_distance: 100.0
+  predict_horizon_s: 2.0
+  cpa_mode: direct
+  success_bonus: 30.0
+  failure_penalty: 12.0
+  w_precision_potential: 0.15
+  precision_scale_m: 12.0
+  closing_decay_distance_m: 0.0
+  near_action_delta_factor: 0.0
+evaluation:
+  trace_stride: 1  # 1 => full-rate state/action trace; 20 => 50 Hz saved at 1 kHz
+training:
+  num_envs: 64
+  n_steps: 256
+  batch_size: 1024
+  snapshot_steps: []
+  epochs: 4
+  total_steps: 12000000
+  eval_every: 131072
+  eval_episodes: 32
+  eval_seed: 24000
+  promotion_success: 0.8
+  promotion_consecutive: 2
+  min_stage_steps: 262144
+  initial_stage: 0
+  max_stage: 6
+  gamma: 0.999
+  gae_lambda: 0.95
+  clip: 0.2
+  target_kl: 0.035
+  actor_lr: 0.0003
+  critic_lr: 0.0009
+  max_grad_norm: 0.5
+  log_std_init: -0.8
+  log_std_min: -4.0  # Minimum policy exploration log(std) during PPO updates
+  hidden_actor:
+  - 256
+  - 256
+  - 128
+  hidden_critic:
+  - 256
+  - 256
+  - 128
+  ent_coef: 0.0005
+  aux_pd_coef: 0.0  # Training-only teacher; never mixed into evaluation actions
+  aux_pd_schedule: constant  # constant or linear, default no auxiliary loss
+  aux_pd_decay_steps: 10000000
+  challenge_eval_enabled: true  # false to avoid duplicate Stage0 evaluations
+curriculum:
+- name: stage0
+  modes:
+  - straight
+  distance:
+  - 10.0
+  - 30.0
+  speed:
+  - 0.0
+  - 5.0
+  time: 40.0
+  max_accel: 2.0
+  success_radius: 5.0
+- name: stage1
+  modes:
+  - straight
+  - dubins
+  distance:
+  - 30.0
+  - 100.0
+  speed:
+  - 4.0
+  - 10.0
+  time: 60.0
+  max_accel: 3.0
+  success_radius: 5.0
+- name: stage2
+  modes:
+  - straight
+  - dubins
+  - singer
+  distance:
+  - 100.0
+  - 300.0
+  speed:
+  - 8.0
+  - 20.0
+  time: 90.0
+  max_accel: 5.0
+  success_radius: 5.0
+- name: stage3
+  modes:
+  - straight
+  - dubins
+  - singer
+  - hybrid
+  distance:
+  - 100.0
+  - 500.0
+  speed:
+  - 10.0
+  - 25.0
+  time: 120.0
+  max_accel: 7.0
+  success_radius: 5.0
+- name: precision_3m
+  modes:
+  - straight
+  - dubins
+  - singer
+  - hybrid
+  distance:
+  - 100.0
+  - 500.0
+  speed:
+  - 10.0
+  - 25.0
+  time: 120.0
+  max_accel: 7.0
+  success_radius: 3.0
+- name: precision_2m
+  modes:
+  - straight
+  - dubins
+  - singer
+  - hybrid
+  distance:
+  - 100.0
+  - 500.0
+  speed:
+  - 10.0
+  - 25.0
+  time: 120.0
+  max_accel: 7.0
+  success_radius: 2.0
+- name: precision_1m
+  modes:
+  - straight
+  - dubins
+  - singer
+  - hybrid
+  distance:
+  - 100.0
+  - 500.0
+  speed:
+  - 10.0
+  - 25.0
+  time: 120.0
+  max_accel: 7.0
+  success_radius: 1.0

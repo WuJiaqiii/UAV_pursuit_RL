@@ -1,0 +1,23 @@
+training:
+  total_steps: 4000000
+  initial_stage: 3
+  max_stage: 3
+target:
+  max_accel: 9.0
+  maneuver_interval:
+  - 0.6
+  - 1.4
+  strict_speed_ceiling: true
+stages:
+  stage3:
+    modes:
+    - hybrid
+    distance:
+    - 300.0
+    - 500.0
+    speed:
+    - 18.0
+    - 25.0
+    time: 150.0
+    max_accel: 9.0
+    success_radius: 2.0

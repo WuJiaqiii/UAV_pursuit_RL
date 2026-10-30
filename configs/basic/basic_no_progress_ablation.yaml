@@ -1,0 +1,4 @@
+# Reward ablation: same simple task without the added dense distance progress.
+extends: basic_stage0_1khz.yaml
+reward:
+  w_progress: 0.0

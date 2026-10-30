@@ -1,0 +1,10 @@
+{
+  "schema": "pursuit-rescue-profile-v1",
+  "base_config": "../basic_v67/s0_standard_pure.yaml",
+  "action_mode": "velocity",
+  "decision_interval_steps": 20,
+  "exploration_time_s": 0.0,
+  "bc_updates": 0,
+  "dagger_rounds": 0,
+  "bc_min_success": 0.0
+}

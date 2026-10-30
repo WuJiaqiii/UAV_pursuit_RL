@@ -1,0 +1,9 @@
+{
+  "schema": "pursuit-rescue-profile-v1",
+  "base_config": "08_mixed_distance100.yaml",
+  "require_init_checkpoint": true,
+  "bc_updates": 0,
+  "dagger_rounds": 0,
+  "bc_min_success": 0.8,
+  "budget_physics_steps": 2000000
+}

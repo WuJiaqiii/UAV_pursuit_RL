@@ -1,0 +1,4 @@
+extends: ../basic_v67/s0_standard_pure.yaml
+stages:
+  stage0:
+    success_radius: 2.0

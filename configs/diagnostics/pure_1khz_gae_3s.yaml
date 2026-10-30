@@ -1,0 +1,5 @@
+# Single-factor comparison: GAE e-folding time = 3 physical seconds.
+# lambda = exp(-0.001 / 3) / 0.9999799901935271
+extends: ../basic_v67/s0_standard_pure.yaml
+training:
+  gae_lambda: 0.9996867257539658

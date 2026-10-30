@@ -1,0 +1,7 @@
+{
+  "schema":"pursuit-rescue-profile-v1",
+  "base_config":"s0_capture2m.yaml",
+  "action_mode":"velocity",
+  "decision_interval_steps":20,
+  "exploration_time_s":0.0
+}

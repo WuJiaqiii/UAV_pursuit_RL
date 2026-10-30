@@ -1,0 +1,2 @@
+# Dependencies are maintained in pyproject.toml; install the package with plots.
+.[plots]

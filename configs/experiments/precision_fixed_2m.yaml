@@ -1,0 +1,4 @@
+training:
+  total_steps: 4000000
+  initial_stage: 5
+  max_stage: 5

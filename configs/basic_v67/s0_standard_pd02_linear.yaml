@@ -1,0 +1,4 @@
+extends: s0_standard_pd02.yaml
+training:
+  aux_pd_schedule: linear
+  aux_pd_decay_steps: 40000000

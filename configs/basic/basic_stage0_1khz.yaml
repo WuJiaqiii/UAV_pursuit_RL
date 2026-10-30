@@ -1,0 +1,42 @@
+# Beginner task: first entrance into a 5 m capture sphere, NOT continuous formation tracking.
+# Base 1 kHz Actor/CTBR with single Stage0; keep 31D/43D policy and action contract.
+extends: ../high_frequency/ppo_1khz.yaml
+seed: 42
+training:
+  initial_stage: 0
+  max_stage: 0
+  num_envs: 64
+  n_steps: 4096
+  batch_size: 4096
+  epochs: 3
+  total_steps: 16000000
+  eval_every: 1048576
+  eval_episodes: 64
+  actor_lr: 0.00005
+  critic_lr: 0.0001
+  clip: 0.15
+  target_kl: 0.015
+  log_std_init: -1.0498221245  # std=0.35
+  log_std_min: -1.8971199849  # std floor=0.15
+  ent_coef: 0.0005
+reward:
+  w_progress: 8.0
+  progress_scale_m: 20.0
+  w_distance: 0.1
+  w_closing: 0.25
+  w_cpa: 0.0
+  w_precision_potential: 0.0
+  w_action_delta: 0.0
+  w_time: 0.03
+  w_speed_risk: 0.2
+  w_tilt_risk: 0.2
+  success_bonus: 30.0
+  failure_penalty: 25.0
+stages:
+  stage0:
+    distance: [12.0, 25.0]
+    speed: [0.0, 3.0]
+    modes: [straight]
+    time: 30.0
+    max_accel: 2.0
+    success_radius: 5.0

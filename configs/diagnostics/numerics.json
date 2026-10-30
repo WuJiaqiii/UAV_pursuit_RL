@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "max_quantile_samples": 8192,
+  "critic_loss_threshold": 100.0,
+  "value_abs_threshold": 1000.0,
+  "target_abs_threshold": 1000.0,
+  "advantage_abs_threshold": 1000.0,
+  "gradient_norm_threshold": 1000.0,
+  "logprob_error_threshold": 0.0001,
+  "save_first_anomaly": true,
+  "fail_on_nonfinite": true,
+  "calibration_every_updates": 32,
+  "calibration_episodes": 32,
+  "calibration_seed": 1900000
+}
