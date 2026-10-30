@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import torch
 from pursuit_rl.learning.ppo import AsymmetricPPO
-from .config import fingerprint, interface, validate
+from .config import DEFAULT, merge, fingerprint, interface, validate
 from .environment import PRIVILEGED_DIM
 
 SCHEMA = "pursuit-direct-ctbr-checkpoint-v2"
@@ -95,9 +95,10 @@ def load(path, device=None, optimizers=False):
         raise ValueError(
             "Expected new direct-CTBR v2 checkpoint; old velocity/CTBR checkpoints are incompatible"
         )
-    c = validate(copy.deepcopy(data["config"]))
+    c = copy.deepcopy(data["config"])
     if fingerprint(c) != data["fingerprint"] or interface(c) != data["interface"]:
         raise ValueError("Corrupt or mismatched checkpoint contract")
+    c = validate(merge(copy.deepcopy(DEFAULT), c))
     if device is not None:
         c["device"] = device
     model = new_model(c, optimizers)

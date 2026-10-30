@@ -2,6 +2,8 @@
 
 import argparse
 import hashlib
+import json
+import sys
 from pathlib import Path
 import torch
 from pursuit_rl.ctbr.config import load
@@ -9,11 +11,12 @@ from pursuit_rl.ctbr.checkpoint import load as checkpoint_load, write_json
 from pursuit_rl.ctbr.training import train
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.curriculum import run
+from pursuit_rl.ctbr.errors import ExperimentGateError
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--version", action="version", version="6.9.0")
+    p.add_argument("--version", action="version", version="6.9.1")
     commands = p.add_subparsers(dest="command", required=True)
     t = commands.add_parser("train")
     t.add_argument("--config", required=True)
@@ -49,7 +52,7 @@ def parser():
     return p
 
 
-def main(argv=None):
+def execute(argv=None):
     args = parser().parse_args(argv)
     torch.set_num_threads(args.cpu_threads)
     if args.command == "train":
@@ -101,10 +104,24 @@ def main(argv=None):
         progress=saved["progress"],
     )
     write_json(args.out, report)
+    error = report["mean_tail_position_rmse"]
+    tail = f"{error:.3f} m" if error is not None else "N/A (no complete tail window)"
     print(
-        f"{report['successes']}/{report['episodes']} sustained successes; tail RMSE {report['mean_tail_position_rmse']:.3f} m"
+        f"{report['successes']}/{report['episodes']} sustained successes; tail RMSE {tail}"
     )
     return report
+
+
+def main(argv=None):
+    try:
+        return execute(argv)
+    except ExperimentGateError as exc:
+        print(
+            json.dumps(exc.details, ensure_ascii=False, allow_nan=False),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

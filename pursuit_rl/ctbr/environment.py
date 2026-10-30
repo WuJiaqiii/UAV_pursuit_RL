@@ -529,6 +529,7 @@ class CTBRBatch:
                         self.maximum_target_accel,
                         self.maximum_target_jerk,
                         self.sat_count / self.ticks.clamp_min(1),
+                        self.tail_count,
                     ),
                     1,
                 )[done]
@@ -572,6 +573,9 @@ class CTBRBatch:
                         target_max_accel=v[15],
                         target_max_jerk=v[16],
                         action_saturation_fraction=v[17],
+                        tail_steps_observed=int(v[18]),
+                        tail_steps_required=self.tail_steps,
+                        tail_complete=int(v[18]) >= self.tail_steps,
                     )
                 )
         obs, priv = self.observe()

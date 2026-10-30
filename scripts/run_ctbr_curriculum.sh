@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_ROOT="${1:-runs/ctbr_v690}"
+OUT_ROOT="${1:-runs/ctbr_v691}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 DEVICE="${DEVICE:-cuda}"
 read -r -a SEED_LIST <<< "${SEEDS:-42 43 44}"
@@ -23,7 +23,7 @@ for seed in "${SEED_LIST[@]}"; do
                 --out "$seed_root/test_${model}_stochastic.json"
         done
     else
-        printf 'Seed %s stopped at a failed curriculum gate; inspect %s\n' "$seed" "$seed_root" >&2
+        printf 'Seed %s stopped; check the experiment gate and logs; inspect %s\n' "$seed" "$seed_root" >&2
         failures=$((failures + 1))
     fi
 done

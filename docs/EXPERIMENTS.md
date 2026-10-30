@@ -2,7 +2,7 @@
 
 ## 正式实验
 
-先运行 README 的 smoke，确认 CPU/GPU 依赖与保存流程。它只有 0.12 秒，不能证明悬停成功。再运行前两个基础阶段，查看完整 20/25 秒任务与独立种子结果，最后扩展到全部课程。
+升级修复时使用新分支与新输出目录，保留旧 v690 数据作对照。先运行 README 的 smoke，确认 CPU/GPU 依赖与保存流程。它只有 0.12 秒，不能证明悬停成功。再运行前两个基础阶段，查看完整 20/25 秒任务与独立种子结果，最后扩展到全部课程。
 
 ```bash
 python main.py curriculum --device cuda --seed 42 --out runs/foundation42 \
@@ -28,7 +28,7 @@ python main.py train --config configs/ctbr/03_goto_hold.json --device cuda \
   --physics-steps 30000000
 ```
 
-迁移加载兼容 actor 与 critic 权重，优化器重新建立，并以新任务 MC 回报重新校准 critic。初始探索标准差按新配置建立。动作/观察、物理、奖励与探索时间常数必须一致；旧版 checkpoint 一律拒绝。需要改变这些定义时应新建模型与实验，不能默默重解释旧权重。
+迁移加载兼容 actor 与 critic 权重，优化器重新建立，并以新任务 MC 回报重新校准 critic。初始探索标准差按新配置建立。动作/观察、物理、奖励与探索时间常数必须一致；v680/v681 checkpoint 拒绝；同一接口的 v690 checkpoint 保持可读，并补入新的训练默认值供评估或显式迁移。需要改变这些定义时应新建模型与实验，不能默默重解释旧权重。
 
 恢复保留权重、优化器、PPO 计数、Torch RNG 与最佳记录，允许改变设备和增加总预算。恢复要求同一 Python 源码指纹与其他配置，且必须在原输出目录。**仿真环境与环境 RNG 没有序列化**：恢复会重新开始未完成回合，因此不承诺逐位复现中断前的连续轨迹。正常保存不会重置环境，长回合可跨多个 rollout 持续运行。课程重新进入时还会核验上一阶段最佳 checkpoint 的文件哈希，防止串错来源。
 
@@ -40,6 +40,8 @@ python main.py train --config configs/ctbr/03_goto_hold.json --device cuda \
 |---|---|
 | `config.json` | 合并默认值后的完整配置 |
 | `metrics.jsonl` | BC/DAgger、PPO、数值诊断、验证事件 |
+| `initialization_*.json` | BC 与每轮 DAgger 候选的完整任务对照 |
+| `gate_failure.json` | 门槛失败的类别、实测成功率、阈值及报告路径 |
 | `critic_warmup_heldout.json` | 预热后的独立随机策略 MC 检验 |
 | `initial_validation.json` | PPO 前初始化的固定种子成绩 |
 | `validation_*.json` / `calibration_*.json` | 更新后的确定性成绩与随机策略 critic 检验 |
@@ -53,7 +55,7 @@ python main.py train --config configs/ctbr/03_goto_hold.json --device cuda \
 
 选择模型时先比较持续成功率，再比较安全到达完整截止时间的比例，最后比较末尾位置误差；提前崩溃不能靠“末尾样本为零”获得优先。相同前两项下，误差至少改善 max(1 cm, 原误差的 1%) 才替换最佳模型。
 
-`best_origin` 为 `bc_initial`、`transfer_initial`、`transfer_dagger_initial` 或 `ppo`。最佳模型仍来自初始化时，即使训练确实执行了很多更新，也只能说“PPO 尚无可观察收益”。课程总结同时保存来源、哈希与被选模型的本阶段 PPO 更新数；总训练更新数应查看 `training_summary.json`，不能使用最佳模型保存时的计数代替。
+`best_origin` 为 `bc_initial`、`bc_dagger_initial`、`transfer_initial`、`transfer_dagger_initial` 或 `ppo`。最佳模型仍来自初始化时，即使训练确实执行了很多更新，也只能说“PPO 尚无可观察收益”。课程总结同时保存来源、哈希与被选模型的本阶段 PPO 更新数；总训练更新数应查看 `training_summary.json`，不能使用最佳模型保存时的计数代替。
 
 ## 冻结评估
 
@@ -79,3 +81,11 @@ python main.py evaluate --device cuda --checkpoint runs/goto42/checkpoints/best.
 - 当前任务通过但锚点退化：课程停止；回到上一阶段权重，减小 actor 学习率或增加该阶段数据预算，再重新验证。
 
 本分支移除了旧评估、ZIP/补丁分发脚本及旧接口专用测试，替换为新契约下的回归测试。历史结果不与新的持续追踪成功定义直接比较；不能把旧 95% 首次捕获率与新版完整末尾保持成功率等同。
+
+## 初始化与缺失窗口诊断（6.9.1）
+
+`training.bc_segment_seconds` 默认 0.5，仅重启监督数据采集片段，不缩短 PPO 或验证回合；`initialization_episodes` 默认 32；冷启动 BC 的 `initialization_success_floor` 默认 0.9。监督损失现在是逐通道标准化误差，不能与原版未标准化 MSE 数值直接比较。判断能否飞行必须看完整 20 秒验证。
+
+失败会写 `gate_failure.json`，命令行以状态码 2 结束，无需再将正常门槛停止理解为程序崩溃。重新执行失败初始化的 resume 也不能绕过门槛。第一阶段没有历史锚点，门槛失败直接指当前悬停任务未通过。失败课程的 `status` 为 `failed_gate`，不再显示容易误解的 `improved_by_training`。
+
+评估 schema 升至 v3：`mean_tail_position_rmse`、`mean_tail_velocity_rmse`、`mean_tail_within_fraction` 仅对具有完整末尾窗口的回合求均值；无此类回合时为 null。检查 `full_tail_episodes` 与 `observed_tail_episodes`，不能忽略提前失败的样本。`mean_observed_tail_position_rmse` 另报至少观察到一个窗口样本的回合，含部分窗口。成功率分母始终包括所有评估回合。

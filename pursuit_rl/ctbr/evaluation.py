@@ -130,8 +130,14 @@ def evaluate(
     def mean(key):
         return sum(r[key] for r in records) / episodes
 
+    full_tail = [r for r in records if r["tail_complete"]]
+    observed_tail = [r for r in records if r["tail_steps_observed"] > 0]
+
+    def tail_mean(key, population=full_tail):
+        return sum(r[key] for r in population) / len(population) if population else None
+
     report = dict(
-        schema="pursuit-direct-ctbr-evaluation-v2",
+        schema="pursuit-direct-ctbr-evaluation-v3",
         task=c["task"],
         seed=seed,
         num_envs=c["num_envs"],
@@ -150,9 +156,13 @@ def evaluate(
             collections.Counter(r["reason"] for r in records if not r["success"])
         ),
         mean_position_rmse=mean("position_rmse"),
-        mean_tail_position_rmse=mean("tail_position_rmse"),
-        mean_tail_velocity_rmse=mean("tail_velocity_rmse"),
-        mean_tail_within_fraction=mean("tail_within_fraction"),
+        mean_tail_position_rmse=tail_mean("tail_position_rmse"),
+        mean_tail_velocity_rmse=tail_mean("tail_velocity_rmse"),
+        mean_tail_within_fraction=tail_mean("tail_within_fraction"),
+        full_tail_episodes=len(full_tail),
+        observed_tail_episodes=len(observed_tail),
+        mean_observed_tail_position_rmse=tail_mean("tail_position_rmse", observed_tail),
+        tail_metric_population="Only episodes with the complete configured tail window; absent data is null",
         mean_mc_return=float(returns.mean()),
         critic_bias=float((values - returns).mean()),
         critic_error_standard_error=float(
