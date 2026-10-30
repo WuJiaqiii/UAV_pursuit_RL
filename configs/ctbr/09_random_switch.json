@@ -1,0 +1,34 @@
+{
+  "task": {
+    "name": "09_random_switch",
+    "kind": "random",
+    "distance": [
+      10,
+      70
+    ],
+    "speed": [
+      3,
+      8
+    ],
+    "max_accel": 3,
+    "duration": 50,
+    "radius": 2.0,
+    "velocity_tolerance": 2.0,
+    "initial_tilt_deg": 10,
+    "initial_velocity_noise": 0.3,
+    "randomization": 1.0,
+    "match_initial_velocity": false,
+    "tail_seconds": 10,
+    "minimum_tail_fraction": 0.9,
+    "switch_interval": [
+      0.5,
+      1.5
+    ],
+    "ou_time": 0.4,
+    "jerk_limit": 20.0
+  },
+  "training": {
+    "physics_steps": 20000000,
+    "transfer_dagger_updates": 0
+  }
+}

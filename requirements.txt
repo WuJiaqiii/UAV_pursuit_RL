@@ -1,2 +1,2 @@
-# Dependencies are maintained in pyproject.toml; install the package with plots.
-.[plots]
+# Run from the repository root.
+-e .

@@ -1,73 +1,60 @@
-# 代码架构
+# 架构与控制定义
 
-[返回 README](../README.md) · [训练](TRAINING.md) · [评估](EVALUATION.md)
-
-## 当前主线
+## 执行路线
 
 ```text
-JSON profile + YAML/extends → config/rescue.py → training/rescue.py
-  ├─ simulation/rescue_environment.py：RescueBatch、奖励聚合、有限截止
-  ├─ learning/ppo.py：AsymmetricPPO、策略采样和更新
-  ├─ learning/buffers.py：TensorRolloutBuffer、GAE 与诊断
-  ├─ evaluation/rescue.py：完整回合评估与 MC 数据
-  └─ learning/rescue_checkpoint.py：配置契约、保存与恢复
+main.py
+ ├─ train ──────── ctbr/training.py
+ ├─ curriculum ── ctbr/curriculum.py ── training.py + evaluation.py
+ └─ evaluate ──── ctbr/evaluation.py
 
-actor观测 → 条件高斯/tanh → 3D期望速度
-  → simulation/rescue_control.py：自身速度/姿态反馈 → 4D CTBR
-  → simulation/torch_backend.py：1 ms 动力学与目标运动
+training / evaluation
+ ├─ ctbr/environment.py ── simulation/rigid_body.py + ctbr/control.py
+ ├─ learning/ppo.py ── actor、critic、条件概率与 PPO 更新
+ ├─ learning/buffers.py ── GAE、终止掩码、数值诊断
+ └─ ctbr/checkpoint.py ── 版本契约、参数、优化器、来源与计数
 ```
 
-课程编排在 `scripts/curriculum.py`。底层动力学不承担 CLI 分发和实验目录管理。
+## 动作与物理时间
 
-## 网络与观测
+网络输出四个 raw actions，经 `tanh` 得到 u∈[-1,1]⁴。第一维映射至名义质量下的加速度等效总推力：
 
-默认速度策略为两个独立 ELU MLP：actor `35→128→128→3`，critic `43→128→128→1`。可训练高斯 `log_std` 与 actor 一起更新；两网络不共享主干，优化器独立。实际结构以 profile/checkpoint 为准。
+```text
+uT ≥ 0: Tcmd = Thover + uT × (Tmax − Thover)
+uT < 0: Tcmd = Thover + uT × (Thover − Tmin)
+```
 
-| actor 索引 | 内容 |
-|---|---|
-| 0–2 | NED 相对位置 / `position_scale`，默认 30 m |
-| 3–5 | 相对速度 / `velocity_obs_scale`，默认 15 m/s |
-| 6–8 | 目标当前加速度 / `observation.target_accel_scale` |
-| 9–11 | 自身速度 / `velocity_obs_scale` |
-| 12–20 | 完整旋转矩阵 |
-| 21–23 | 实际角速度 / 配置最大角速度尺度 |
-| 24 | 实际推力 / 悬停推力 |
-| 25–30 | 六个归一化边界余量 |
-| 31 | 剩余任务时间比例 |
-| 32–34 | 上一 raw action，重置时为零 |
+默认 Tmin=0、Thover=9.81、Tmax=30 m/s²；uT=−1、0、1 分别对应这三个值。消除了旧对称 hover±delta 映射中低端大段裁剪、高端无法用满的问题。三轴角速度指令分别为 u×[1.2,1.2,1.0] rad/s。动作是绝对 CTBR 指令，没有速度外环、控制器动作混合或增量动作累加。
 
-critic 另加 8 维：阻力、角速度时间常数、推力时间常数、质量比例及目标模式 4 维 one-hot。当前未输入目标内部 OU 状态或 Hybrid 切换计时。部署需要提供或估计 actor 所需的量，包括目标加速度与实际执行器状态。
+随机采样与确定性部署均使用可观察的 raw-action AR(1) 状态：ρ=exp(−dt/0.02)，raw_t=ρ raw_(t−1)+(1−ρ)µθ(obs)+σ√(1−ρ²)ε。它在每毫秒产生新决策，包含约 20 ms 的策略输出平滑。重算 PPO 概率时使用相同历史、ρ 与标准差，避免在执行端额外滤波后仍使用错误概率。探索标准差默认限制在 0.02–0.3，初始为 0.07。
 
-rescue 的直接 CTBR 路线为 4D 动作，因此 actor 36D / critic 44D；旧 `main.py` 的 31D/43D 编码是另一契约，见[旧接口](LEGACY.md)。
+物理模型采用 NED 坐标、SO(3) 姿态积分、重力与二次速度阻力；推力与体轴角速度通过精确指数形式的一阶闭环响应，默认时间常数 100、130 ms。随机化逐级扩展至质量比±5%、阻力系数±20%、两个响应时间±15%。
 
-## 控制与探索
+**这仍是体轴角速度闭环的替代模型。** 没有四电机混控、独立电机效率、ESC、电池、电机转动惯量、气动桨模型、通信/传感器延时队列或真实内环 PID。两个一阶时间常数代表响应滞后，不能解释为这些部件已经被分别建模。若目标是实机部署，需要另外验证这些效应。
 
-默认速度动作按 `[15,15,5] m/s` 缩放，自身速度误差乘增益 2 得到期望加速度，范数限幅 8 m/s²。几何内环目标倾角上限 35°，原机体推力/角速度极限、执行器滞后和域随机化继续生效。
+## 观察与 critic
 
-学习策略动作解码器只读取自身状态，不使用目标位置替网络制导。`reference_action()` 使用目标状态，但仅用于示教标签与明确标记的参考控制器评估。
+默认 actor 输入 66 维：相对位置/速度、当前目标加速度、自机速度、姿态矩阵、实际角速度与推力、飞行区域边距、剩余任务时间、8 个 raw-action 历史与任务半径/速度容限。统一缩放，raw history 首维固定为索引 32。目标状态是理想当前测量，尚未建模估计误差与传感器噪声。
 
-PPO 使用 tanh 高斯与 Jacobian 修正；默认速度策略为独立噪声，直接 CTBR profile 可使用上一 raw action 可观测的条件相关高斯。采样与概率重算使用同一条件分布。BC 屏蔽动作记忆输入；无 BC 的迁移完整复制已有 actor 权重。
+critic 为 110 维：actor 输入加 44 维当前特权状态，包括物理参数、目标机动模式、当前 OU 状态、有界速度参考与下一切换的剩余时间、轨迹相位、末尾考核累计量及任务类型。actor 不接收未来目标轨迹、潜在随机加速度或物理随机化真值。剩余时间、历史事件和考核累计量让 critic 能区分有限时长任务的不同状态。
 
-## 模块分工
+每个新阶段先冻结当前策略，完整运行随机策略回合，按真实终止边界反向计算 Monte Carlo 回报，预热 critic；随后以独立种子的随机策略回合报告误差。PPO 验证期间也输出随机策略的 V(s₀) 与 G₀ 对照、偏差、RMSE 和偏差的样本标准误。确定性策略与随机策略分开记录，不能把确定性轨迹回报直接解释为随机策略 critic 的正确目标。
 
-| 目录 | 职责 |
-|---|---|
-| [config](../pursuit_rl/config/) | 默认配置、继承/校验、只读 Config；`rescue.py` 主线 profile；`challenge.py` 场景与迁移兼容性 |
-| [simulation](../pursuit_rl/simulation/) | 动力学、目标、事件、奖励、观测，NumPy/Torch 后端；`rescue_*` 当前接口包装与内环 |
-| [learning](../pursuit_rl/learning/) | PPO、buffer/GAE、`rescue_checkpoint.py` 和旧 `checkpoints.py` 两套模型契约 |
-| [training](../pursuit_rl/training/) | `rescue.py` 当前训练；`trainer.py` 旧训练 |
-| [evaluation](../pursuit_rl/evaluation/) | rescue/challenge 当前评估；benchmark、PN/APN 标定、E1–E5 和离线指标 |
-| [control](../pursuit_rl/control/) | 旧接口 PN/APN/PD 与几何制导；当前内环在 `simulation/rescue_control.py` |
-| [artifacts](../pursuit_rl/artifacts/) | 日志、实验归属、轨迹、导出和源码指纹；完整 Experiment/session 体系主要由旧 `main.py` 使用 |
-| [visualization](../pursuit_rl/visualization/) | 轨迹、动画、指标与实验绘图 |
-| [scripts](../scripts/) / [tests](../tests/) | 运行编排与功能回归 |
+## 初始化与 PPO
 
-读代码建议：`scripts/rescue.py` → `config/rescue.py` → `simulation/rescue_environment.py` → `rescue_control.py` → `learning/ppo.py` / `buffers.py` → `training/rescue.py` → 评估与 checkpoint。
+第一阶段采用几何控制器监督预训练与 DAgger。教师只使用当前目标状态和名义物理参数，不读取未来轨迹或质量随机化真值。监督输入中的 raw-action 历史全部清零，避免把上一拍教师动作当答案。02–07 各有 500 次迁移 DAgger 更新，帮助覆盖新状态；08–10 默认关闭迁移教师更新。这些改动属于初始化，单独统计，不能算作 PPO 收益。
 
-## 配置和契约
+PPO 采样始终执行网络自身的动作；辅助教师损失系数为零。actor/critic 分别优化，actor 因 KL 停止时 critic 仍可继续更新。默认每环境 rollout 为 4096 ms；折扣与 GAE 根据秒设置：γ=exp(−dt/20)，γλ=exp(−dt/3)，避免把 20 Hz 的逐步常数直接用于 1 kHz。
 
-YAML 基准在 `pursuit_rl/config/defaults.yaml`。支持相对 `extends`，`stages` 按名称覆盖，`curriculum` 整体替换。`Config` 深层只读，`with_overrides()` 生成并校验新对象；数值流程也使用解析后的字典。
+## 奖励与终止
 
-主线先读取 JSON profile，再读取其 `base_config` YAML。JSON 中的控制周期、网络、PPO 设置和物理时间常数决定 rescue 的实际参数；旧 YAML 的 `n_steps/total_steps/gae_lambda` 不控制这个入口。
+连续奖励是时间积分：位置接近、相对速度接近、生存项，以及姿态和角速度成本都乘 dt；距离进展使用 d_(t−1)−d_t；动作变化使用 −c||u_t−u_(t−1)||²/dt，对应动作导数平方积分。首次进入半径的奖励每回合只给一次；任务完整结束成功奖励与物理失败惩罚为离散事件，不乘 dt。最后整体乘 0.1。
 
-checkpoint 保存完整配置/profile、动作与观测契约、指纹、模型、优化器、随机状态和来源计数。改变动作单位/归一化不能只凭网络形状匹配而迁移。恢复和任务迁移规则见[训练](TRAINING.md)。
+进入半径仅记录 acquisition，不结束回合。默认末尾窗口内至少 90% 的时刻位于任务半径内，并且相对速度 RMSE 不超过容限，且整回合未触发飞行约束，才算成功。同时报告全程/末尾位置 RMSE、首次进入时间与最长连续驻留时间，避免仅看一次擦边进入。
+
+任务截止是可观察的有限时域终点，bootstrap=0；rollout 截断仍 bootstrap，不能跨环境 reset 递推 GAE。纯外部 truncation 的处理保留在 buffer 中供测试，但正常任务均以真正终止返回。
+
+## 随机目标
+
+机动目标包括相关 OU 加速度、横向转弯及分段加速家族；随机任务额外周期性切换家族。先将有界加速度积分为潜在速度参考，将参考投影至速度球及垂直速度区间，再让真实目标速度以 τ=max(2A/J, dt) 指数响应跟随。凸组合保持真实速度有界，且在零初始加速度下真实加速度≤A、真实 jerk≤J；避免直接裁剪真实速度带来的瞬时 jerk 尖峰。目标运动积分使用 float64，降低 1 ms 二次差分的误差；网络输入仍为 float32。实际极值仍单独测量。
+参考生成器不读取追踪机位置，也没有隐含边界回拉。配置先检查水平/垂直行程与圆轨迹半径；运行时参考越界显式计为 `invalid_target` 失败。距离、速度、加速度及随机化强度按课程逐级增加。

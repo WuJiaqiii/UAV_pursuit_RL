@@ -176,7 +176,9 @@ class AsymmetricPPO(nn.Module):
                 )
         # Enforce the configured lower bound even if KL stopping skips updates.
         with torch.no_grad():
-            self.log_std.clamp_(min=c.get("log_std_min", -4.0), max=1.0)
+            self.log_std.clamp_(
+                min=c.get("log_std_min", -4.0), max=c.get("log_std_max", 1.0)
+            )
         device = self.device
         o = torch.as_tensor(buffer.obs.reshape(-1, buffer.obs.shape[-1]), device=device)
         pr = torch.as_tensor(
@@ -288,7 +290,9 @@ class AsymmetricPPO(nn.Module):
                 else:
                     actor_grad = actor_loss.new_zeros(())
                 with torch.no_grad():
-                    self.log_std.clamp_(c.get("log_std_min", -4.0), 1.0)
+                    self.log_std.clamp_(
+                        c.get("log_std_min", -4.0), c.get("log_std_max", 1.0)
+                    )
                 values = self.critic(pr[ids]).squeeze(-1)
                 vf_loss = (
                     F.huber_loss(

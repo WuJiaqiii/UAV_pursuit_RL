@@ -1,0 +1,55 @@
+{
+  "schema": "pursuit-direct-ctbr-curriculum-v2",
+  "phases": [
+    {
+      "name": "01_hover_small",
+      "profile": "01_hover_small.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "02_hover_recovery",
+      "profile": "02_hover_recovery.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "03_goto_hold",
+      "profile": "03_goto_hold.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "04_cruise_slow",
+      "profile": "04_cruise_slow.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "05_cruise_fast",
+      "profile": "05_cruise_fast.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "06_smooth_turns",
+      "profile": "06_smooth_turns.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "07_straight_pursuit",
+      "profile": "07_straight_pursuit.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "08_maneuver_pursuit",
+      "profile": "08_maneuver_pursuit.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "09_random_switch",
+      "profile": "09_random_switch.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "10_random_high",
+      "profile": "10_random_high.json",
+      "retention_anchor": false
+    }
+  ]
+}

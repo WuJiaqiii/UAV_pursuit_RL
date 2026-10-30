@@ -1,3 +1,0 @@
-extends: s0_standard_pd02.yaml
-training:
-  gae_lambda: 0.9995

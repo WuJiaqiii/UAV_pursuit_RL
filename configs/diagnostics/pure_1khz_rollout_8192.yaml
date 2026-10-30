@@ -1,4 +1,0 @@
-# Single-factor comparison: 8.192 s of trajectory per rollout.
-extends: ../basic_v67/s0_standard_pure.yaml
-training:
-  n_steps: 8192

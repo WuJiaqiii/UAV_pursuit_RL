@@ -1,2 +1,0 @@
-extends: smoke_1khz.yaml
-simulation_backend: torch

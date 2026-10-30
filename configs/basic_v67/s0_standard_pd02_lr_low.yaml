@@ -1,5 +1,0 @@
-extends: s0_standard_pd02.yaml
-training:
-  actor_lr: 0.000025
-  critic_lr: 0.00005
-  target_kl: 0.01

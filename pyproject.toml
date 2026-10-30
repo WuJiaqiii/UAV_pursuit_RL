@@ -5,14 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pursuit-rl"
 dynamic = ["version"]
-description = "Vectorized simulated drone pursuit with asymmetric PPO and CTBR"
+description = "Sustained flight and random maneuver pursuit with direct CTBR PPO"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.25,<3", "torch>=2.1", "PyYAML>=6,<7"]
+dependencies = ["numpy>=1.25,<3", "torch>=2.1"]
 
 [project.optional-dependencies]
-plots = ["matplotlib>=3.8", "Pillow>=9"]
-logging = ["tensorboard>=2"]
-dev = ["pytest>=8", "black>=24", "matplotlib>=3.8", "Pillow>=9"]
+dev = ["pytest>=8", "black>=24"]
 
 [project.scripts]
 pursuit = "main:main"
@@ -25,9 +23,6 @@ version = {attr = "pursuit_rl.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["pursuit_rl*"]
-
-[tool.setuptools.package-data]
-"pursuit_rl.config" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

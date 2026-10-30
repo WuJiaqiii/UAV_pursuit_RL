@@ -1,3 +1,0 @@
-extends: s0_standard_pd02.yaml
-training:
-  aux_pd_coef: 0.5

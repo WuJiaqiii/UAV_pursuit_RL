@@ -1,9 +1,0 @@
-# From-scratch 1 kHz curriculum; enormous decision-step budget.
-extends: ppo_1khz.yaml
-training:
-  initial_stage: 0
-  max_stage: 5
-  total_steps: 800000000
-  eval_episodes: 16
-  n_steps: 4096
-  batch_size: 4096

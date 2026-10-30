@@ -196,46 +196,6 @@ class _DiagnosticBuffer:
             }
         return result
 
-    def record_diagnostics(self, k, env, episode_start, info=None):
-        if not self.diagnostic_options["enabled"]:
-            return
-        tensor = isinstance(self.reward, torch.Tensor)
-        self.physics = dict(env.cfg["physics"])
-        self.episode_start[k] = episode_start
-        self.elapsed[k] = env.elapsed
-        u = env.pursuer
-        if tensor:
-            self.actuator_state[k] = torch.cat((u.thrust[:, None], u.rate), dim=1)
-            ev = env.last_event
-            self.event_code[k] = torch.where(
-                ev["hit"],
-                1,
-                torch.where(
-                    ev["speed"] > self.physics["max_speed"],
-                    2,
-                    torch.where(
-                        ev["outside"],
-                        3,
-                        torch.where(
-                            ev["failed"], 4, torch.where(self.truncated[k], 5, 0)
-                        ),
-                    ),
-                ),
-            )
-        else:
-            self.actuator_state[k] = np.column_stack((u.thrust, u.rate))
-            codes = {"success": 1, "speed": 2, "outside": 3, "tilt": 4, "timeout": 5}
-            self.event_code[k] = [codes.get(rec.get("reason"), 0) for rec in info]
-        for name, value in env.reward_components.items():
-            if name not in self.reward_components:
-                self.reward_components[name] = (
-                    torch.zeros_like(self.reward)
-                    if tensor
-                    else np.zeros_like(self.reward)
-                )
-            self.reward_components[name][k] = value
-        self.diagnostic_steps = k + 1
-
     def diagnostic_summary(self):
         fields = (
             "obs",
@@ -292,6 +252,7 @@ class _DiagnosticBuffer:
                 ("outside", 3),
                 ("tilt", 4),
                 ("timeout", 5),
+                ("invalid_target", 6),
             ):
                 mask = self.event_code == code
                 result["events"][label] = {
@@ -313,18 +274,12 @@ class _DiagnosticBuffer:
             result["actions"]["actuator_autocorrelation"] = self.temporal_summary(
                 self.actuator_state
             )
-            if self.physics and getattr(self, "action_semantics", "ctbr") == "ctbr":
-                p = self.physics
-                unsaturated = p["hover_thrust"] + p["thrust_delta"] * action[..., 0]
-                cmd = (
-                    unsaturated.clamp(p["thrust_min"], p["thrust_max"])
-                    if tensor
-                    else np.clip(unsaturated, p["thrust_min"], p["thrust_max"])
-                )
-                result["actions"]["command_thrust"] = self.summarize(cmd)
-                samples = self.reward.numel() if tensor else self.reward.size
-                result["actions"]["thrust_lower_saturation_fraction"] = (
-                    count(unsaturated <= p["thrust_min"]) / samples
+            if self.physics and getattr(self, "action_semantics", "ctbr") == "ctbr-v2":
+                from pursuit_rl.ctbr.control import thrust_from_action
+
+                action_tensor = action if tensor else torch.from_numpy(action)
+                result["actions"]["command_thrust"] = self.summarize(
+                    thrust_from_action(action_tensor[..., 0], self.physics)
                 )
         result["gamma"] = self.gamma
         result["gae_lambda"] = self.gae_lambda
@@ -375,54 +330,9 @@ class _DiagnosticBuffer:
                 "outside": 3,
                 "tilt": 4,
                 "timeout": 5,
+                "invalid_target": 6,
             },
         }
-
-
-class RolloutBuffer(_DiagnosticBuffer):
-    def __init__(self, steps, n, obs_dim, critic_dim, diagnostics=None, action_dim=4):
-        shape = (steps, n)
-        for name, size in {
-            "obs": (obs_dim,),
-            "priv": (critic_dim,),
-            "raw": (action_dim,),
-            "teacher": (action_dim,),
-        }.items():
-            setattr(self, name, np.zeros(shape + size, np.float32))
-        for name in (
-            "logprob",
-            "values",
-            "reward",
-            "next_values",
-            "bootstrap_values",
-            "delta",
-            "advantage",
-            "returns",
-            "elapsed",
-        ):
-            setattr(self, name, np.zeros(shape, np.float32))
-        for name in ("terminated", "truncated", "episode_start"):
-            setattr(self, name, np.zeros(shape, bool))
-        self.actuator_state = np.zeros(shape + (4,), np.float32)
-        self.event_code = np.zeros(shape, np.int8)
-        self._init_diagnostics(diagnostics)
-
-    def compute_gae(self, gamma, lam):
-        """Bootstrap external truncations at final_obs; never recurse past reset."""
-        self.gamma, self.gae_lambda = float(gamma), float(lam)
-        gae = np.zeros(self.reward.shape[1], np.float64)
-        for t in range(self.reward.shape[0] - 1, -1, -1):
-            continuation = ~(self.terminated[t] | self.truncated[t])
-            bootstrap = ~self.terminated[t]
-            boot_value = np.where(bootstrap, self.next_values[t], 0.0).astype(
-                np.float64
-            )
-            delta = self.reward[t] + gamma * boot_value - self.values[t]
-            gae = delta + gamma * lam * np.where(continuation, gae, 0.0)
-            self.bootstrap_values[t] = boot_value
-            self.delta[t] = delta
-            self.advantage[t] = gae.astype(np.float32)
-        self.returns = self.advantage + self.values
 
 
 class TensorRolloutBuffer(_DiagnosticBuffer):

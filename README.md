@@ -1,67 +1,55 @@
-# UAV Pursuit RL
+# UAV pursuit RL · 6.9 · 直接 CTBR
 
-无人机追逐仿真与非对称 PPO。当前主线是 **50 Hz 期望速度策略 + 1 kHz 几何内环**，先 BC/DAgger 初始化，再用 PPO 优化，并逐步增加目标机动、初始距离与初速。
+这一分支将目标统一为：网络每 1 ms 输出 collective thrust 与三个 body rates，先学会持续飞行，再学会持续追踪，最终追踪随机高机动目标。物理积分与策略决策均为 1 kHz。它是一条需要正式训练验证的新实验路线，尚不能据此宣称追踪失效已经解决。
 
-成功定义为截止或失败前**首次进入捕获球**，默认半径 2 米；不代表持续保持 2 米追踪误差，也不代表真机或硬件在环验证。
+## 安装与运行
 
-## 文档导航
-
-| 需求 | 文档 |
-|---|---|
-| 网络、观测、动作与模块关系 | [代码架构](docs/ARCHITECTURE.md) |
-| 初始化、训练、迁移、恢复与课程 | [训练指南](docs/TRAINING.md) |
-| 冻结评估、参考控制器与收益对照 | [评估指南](docs/EVALUATION.md) |
-| 时间尺度、奖励、critic 与异常证据 | [诊断指南](docs/DIAGNOSTICS.md) |
-| 旧 `main.py`、直接 CTBR、E1–E5 与轨迹分析 | [旧接口参考](docs/LEGACY.md) |
-| 已验证结果、版本演变和当前研究缺口 | [实验与版本历史](docs/HISTORY.md) |
-
-日常使用先读本页和训练指南。命令均在仓库根目录执行。
-
-## 安装与检查
-
-项目声明 Python ≥3.10。先准备与服务器驱动匹配的 PyTorch，再安装项目：
+使用 Python 3.10+，在仓库根目录执行。GPU 训练需先安装与服务器驱动匹配的 CUDA PyTorch。
 
 ```bash
-git clone https://github.com/WuJiaqiii/UAV_pursuit_RL.git
-cd UAV_pursuit_RL
-python -m pip install -e '.[dev,plots]'
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -m pip install -e '.[dev]'
 python -m pytest -q
+
+# 仅检查完整软件链路；0.12 秒的任务没有飞行性能意义。
+python main.py train --config configs/ctbr/smoke.json --out runs/smoke --device cpu
+
+# 首先训练并考核基础悬停；通过后可去掉 --phases 运行完整课程。
+python main.py curriculum --out runs/ctbr_seed42 --device cuda --seed 42 \
+  --phases 01_hover_small
+
+# 顺序运行三种训练种子、全部十阶段与最终独立种子评估。
+bash scripts/run_ctbr_curriculum.sh runs/ctbr_v690
 ```
 
-只查看入口、不启动实验：
+脚本默认每阶段 2,000 万条 **PPO 物理转移**、64 个课程门槛样本、256 个最终测试样本。默认 32 个环境，因此每阶段每环境约 625 秒，足以经历多个完整任务。BC、MC 校准和验证还会额外消耗交互，分别计数。总算力需求应以服务器实测速率估算。
 
-```bash
-python scripts/rescue.py --help
-python scripts/challenge.py --help
-python scripts/curriculum.py --help
-```
+可通过 `SEEDS="42" DEVICE=cuda:0 PHYSICS_STEPS=20000000` 等环境变量调整脚本。课程失败会停止该种子的后续阶段，保存结果并继续其他种子；不会跳过失败阶段。重跑同一命令可继续未完成更新；恢复时未完成的环境回合会重新开始，详见实验说明。
 
-## 模型与实验数据
+## 十阶段课程
 
-Git 仓库不包含 `.pt` 权重和 `runs/` 结果。历史说明中的 `pretrained/`、`local_validation/`、`challenge_screen/` 也不在当前仓库中。评估已有模型时，准备自己的 checkpoint 并指定真实路径。
+所有阶段都使用同一直接 CTBR 接口，进入目标半径不会结束回合。成功要求安全运行至完整截止时间，并满足末尾考核窗口的距离占比与相对速度条件。
 
-课程默认查找 `baseline_models/velocity_50hz_2m/seed_42/checkpoints/best.pt`；也可通过 `--baseline-root` 指向已有服务器实验根目录。没有模型时，可从头训练：
+| 阶段 | 任务 | 目标速度 m/s | 初始距离 m | 时长 s |
+|---|---|---:|---:|---:|
+| 01 | 小扰动悬停 | 0 | 0–0.3 | 20 |
+| 02 | 悬停恢复 | 0 | 0–0.8 | 25 |
+| 03 | 移动至定点并保持 | 0 | 2–5 | 30 |
+| 04 | 低速平飞 | 0.5–2 | 0–2 | 30 |
+| 05 | 较快平飞 | 2–5 | 0–3 | 30 |
+| 06 | 平滑转弯 | 2–4 | 0–2 | 35 |
+| 07 | 直线目标追踪 | 0–5 | 10–30 | 40 |
+| 08 | 机动目标追踪 | 2–6 | 10–50 | 45 |
+| 09 | 随机切换机动 | 初始 3–8，上限 8 | 10–70 | 50 |
+| 10 | 随机高机动 | 初始 4–10，上限 10 | 10–100 | 60 |
 
-```bash
-DEVICE=cuda PPO_STEPS=20000000 bash scripts/run_rescue.sh
-```
+09/10 会随机切换滑行、相关随机加速度、横向转弯、分段加速与制动。加速度上限分别为 3、5 m/s²；速度可能因制动降至初始采样范围以下。目标不根据追踪无人机的位置回拉。真实速度、加速度、jerk 均记录，越界参考明确记为失败。
 
-这是需要实际算力的基础任务训练，不是快速功能检查。默认输出为 `runs/v680_rescue/velocity_50hz_2m/seed_42/`。预算、模型来源与恢复规则见[训练指南](docs/TRAINING.md)。
+## 代码入口与文档
 
-## 两套接口
+唯一入口为 `main.py`（安装后也可用 `pursuit`）。`train` 训练单个阶段；`curriculum` 串联课程并检查技能保留；`evaluate` 执行冻结策略完整回合评估。
 
-| 路线 | 入口 | 默认观测/动作 |
-|---|---|---|
-| 当前恢复与课程路线 | `scripts/rescue.py`、`scripts/challenge.py`、`scripts/curriculum.py` | 速度 actor 35D / critic 43D，3D 期望速度 |
-| 旧实验与分析路线 | `main.py`，安装后也可用 `pursuit` | actor 31D / critic 43D，4D 推力和机体系角速度（CTBR） |
+- [架构与动作/动力学定义](docs/ARCHITECTURE.md)：观察、动作映射、时延假设、奖励与 critic。
+- [实验操作与结果判读](docs/EXPERIMENTS.md)：迁移、恢复、计数、评估和故障诊断。
+- [本地验证范围](docs/VALIDATION.md)：实际执行的测试、结果与未验证项。
 
-同名 `best.pt` 不表示相同模型契约。两条路线的 checkpoint 不应交叉传入；`main.py experiments` 不能直接用于 rescue checkpoint。
-
-基础任务已获得有效策略；困难任务新增 PPO 尚未获得可靠收益，课程通过可能只来自原模型迁移能力。证据与范围见[历史](docs/HISTORY.md)。
-
-## 维护
-
-通过 Git 提交和 Pull Request 审阅源码变化。实验保存配置、来源、真实更新计数，并将模型选择数据与独立测试分开。
-
-`SOURCE_MANIFEST.json`、`docs/HISTORICAL_SOURCE_MANIFEST_*.json` 和 `VERIFICATION_V681.json` 是历史交付清单/验证快照，不是当前工作树的完整性证明，也不是本次提交重跑的测试结果。
+本分支清除了旧 NumPy 环境、速度策略/旧 CTBR 双入口、历代实验脚本及历史说明文件；它们仍可在主分支及 Git 历史中查阅。旧模型的动作/观察约定不兼容新版，加载时会拒绝。复用的 PPO 核心保留在 `pursuit_rl/learning/`，新环境与训练编排在 `pursuit_rl/ctbr/`，数值动力学在 `pursuit_rl/simulation/`。

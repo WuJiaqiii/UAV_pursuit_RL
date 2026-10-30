@@ -1,0 +1,34 @@
+{
+  "task": {
+    "name": "10_random_high",
+    "kind": "random_high",
+    "distance": [
+      10,
+      100
+    ],
+    "speed": [
+      4,
+      10
+    ],
+    "max_accel": 5,
+    "duration": 60,
+    "radius": 2.0,
+    "velocity_tolerance": 2.5,
+    "initial_tilt_deg": 10,
+    "initial_velocity_noise": 0.3,
+    "randomization": 1.0,
+    "match_initial_velocity": false,
+    "tail_seconds": 10,
+    "minimum_tail_fraction": 0.9,
+    "switch_interval": [
+      0.3,
+      0.9
+    ],
+    "ou_time": 0.25,
+    "jerk_limit": 20.0
+  },
+  "training": {
+    "physics_steps": 20000000,
+    "transfer_dagger_updates": 0
+  }
+}

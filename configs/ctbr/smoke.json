@@ -1,0 +1,37 @@
+{
+  "num_envs": 2,
+  "policy": {
+    "hidden_actor": [
+      16,
+      16
+    ],
+    "hidden_critic": [
+      16,
+      16
+    ]
+  },
+  "task": {
+    "duration": 0.12,
+    "tail_seconds": 0.06,
+    "initial_tilt_deg": 0.0,
+    "distance": [
+      0.0,
+      0.05
+    ],
+    "initial_velocity_noise": 0.0
+  },
+  "training": {
+    "physics_steps": 256,
+    "rollout_steps": 64,
+    "batch_size": 64,
+    "epochs": 1,
+    "bc_samples": 16,
+    "bc_stride": 2,
+    "bc_updates": 4,
+    "dagger_rounds": 0,
+    "critic_updates": 2,
+    "mc_episodes": 2,
+    "validation_episodes": 2,
+    "validation_every": 128
+  }
+}
