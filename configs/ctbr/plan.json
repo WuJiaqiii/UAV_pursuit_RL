@@ -1,54 +1,220 @@
 {
-  "schema": "pursuit-direct-ctbr-curriculum-v2",
+  "schema": "pursuit-direct-ctbr-curriculum-v3",
+  "prescreen": true,
+  "early_promotion": true,
+  "gate_seed_offsets": [
+    79000,
+    179000
+  ],
+  "retention_seed_offsets": [
+    89000,
+    189000
+  ],
+  "retention_rmse_relative_budget": 0.2,
+  "retention_rmse_absolute_slack_m": 0.05,
   "phases": [
     {
       "name": "01_hover_small",
       "profile": "01_hover_small.json",
+      "difficulty_axis": "foundation",
       "retention_anchor": true
     },
     {
       "name": "02_hover_recovery",
       "profile": "02_hover_recovery.json",
+      "difficulty_axis": "foundation",
       "retention_anchor": false
     },
     {
       "name": "03_goto_hold",
       "profile": "03_goto_hold.json",
-      "retention_anchor": false
-    },
-    {
-      "name": "04_cruise_slow",
-      "profile": "04_cruise_slow.json",
-      "retention_anchor": false
-    },
-    {
-      "name": "05_cruise_fast",
-      "profile": "05_cruise_fast.json",
+      "difficulty_axis": "foundation",
       "retention_anchor": true
     },
     {
-      "name": "06_smooth_turns",
-      "profile": "06_smooth_turns.json",
-      "retention_anchor": false
-    },
-    {
-      "name": "07_straight_pursuit",
-      "profile": "07_straight_pursuit.json",
+      "name": "04_near_follow_a000",
+      "profile": "04_near_follow_a000.json",
+      "difficulty_axis": "foundation",
       "retention_anchor": true
     },
     {
-      "name": "08_maneuver_pursuit",
-      "profile": "08_maneuver_pursuit.json",
+      "name": "05_near_a025",
+      "profile": "05_near_a025.json",
+      "difficulty_axis": "max_accel",
       "retention_anchor": false
     },
     {
-      "name": "09_random_switch",
-      "profile": "09_random_switch.json",
+      "name": "06_near_a050",
+      "profile": "06_near_a050.json",
+      "difficulty_axis": "max_accel",
       "retention_anchor": false
     },
     {
-      "name": "10_random_high",
-      "profile": "10_random_high.json",
+      "name": "07_near_a100",
+      "profile": "07_near_a100.json",
+      "difficulty_axis": "max_accel",
+      "retention_anchor": false
+    },
+    {
+      "name": "08_near_a150",
+      "profile": "08_near_a150.json",
+      "difficulty_axis": "max_accel",
+      "retention_anchor": false
+    },
+    {
+      "name": "09_near_a200",
+      "profile": "09_near_a200.json",
+      "difficulty_axis": "max_accel",
+      "retention_anchor": false
+    },
+    {
+      "name": "10_near_turns",
+      "profile": "10_near_turns.json",
+      "difficulty_axis": "motion_patterns",
+      "retention_anchor": false
+    },
+    {
+      "name": "11_near_mixed",
+      "profile": "11_near_mixed.json",
+      "difficulty_axis": "motion_patterns",
+      "retention_anchor": true
+    },
+    {
+      "name": "12_near_unmatched",
+      "profile": "12_near_unmatched.json",
+      "difficulty_axis": "match_initial_velocity",
+      "retention_anchor": false
+    },
+    {
+      "name": "13_distance_5",
+      "profile": "13_distance_5.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "14_distance_10",
+      "profile": "14_distance_10.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "15_distance_30",
+      "profile": "15_distance_30.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "16_speed_4",
+      "profile": "16_speed_4.json",
+      "difficulty_axis": "speed",
+      "retention_anchor": false
+    },
+    {
+      "name": "17_speed_6",
+      "profile": "17_speed_6.json",
+      "difficulty_axis": "speed",
+      "retention_anchor": false
+    },
+    {
+      "name": "18_distance_50",
+      "profile": "18_distance_50.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "19_distance_far",
+      "profile": "19_distance_far.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "20_maneuver_pursuit",
+      "profile": "20_maneuver_pursuit.json",
+      "difficulty_axis": "speed",
+      "retention_anchor": true
+    },
+    {
+      "name": "21_random_families",
+      "profile": "21_random_families.json",
+      "difficulty_axis": "kind",
+      "retention_anchor": false
+    },
+    {
+      "name": "22_switch_15",
+      "profile": "22_switch_15.json",
+      "difficulty_axis": "switch_interval",
+      "retention_anchor": false
+    },
+    {
+      "name": "23_jerk_budget20",
+      "profile": "23_jerk_budget20.json",
+      "difficulty_axis": "jerk_limit",
+      "retention_anchor": false
+    },
+    {
+      "name": "24_accel_3",
+      "profile": "24_accel_3.json",
+      "difficulty_axis": "max_accel",
+      "retention_anchor": false
+    },
+    {
+      "name": "25_speed_8",
+      "profile": "25_speed_8.json",
+      "difficulty_axis": "speed",
+      "retention_anchor": false
+    },
+    {
+      "name": "26_distance_70",
+      "profile": "26_distance_70.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "27_ou_040",
+      "profile": "27_ou_040.json",
+      "difficulty_axis": "ou_time",
+      "retention_anchor": false
+    },
+    {
+      "name": "28_ou_025",
+      "profile": "28_ou_025.json",
+      "difficulty_axis": "ou_time",
+      "retention_anchor": false
+    },
+    {
+      "name": "29_switch_09",
+      "profile": "29_switch_09.json",
+      "difficulty_axis": "switch_interval",
+      "retention_anchor": false
+    },
+    {
+      "name": "30_response_050",
+      "profile": "30_response_050.json",
+      "difficulty_axis": "response_time_s",
+      "retention_anchor": false
+    },
+    {
+      "name": "31_accel_5",
+      "profile": "31_accel_5.json",
+      "difficulty_axis": "max_accel",
+      "retention_anchor": false
+    },
+    {
+      "name": "32_speed_10",
+      "profile": "32_speed_10.json",
+      "difficulty_axis": "speed",
+      "retention_anchor": false
+    },
+    {
+      "name": "33_distance_100",
+      "profile": "33_distance_100.json",
+      "difficulty_axis": "distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "34_random_high",
+      "profile": "34_random_high.json",
+      "difficulty_axis": "duration",
       "retention_anchor": false
     }
   ]

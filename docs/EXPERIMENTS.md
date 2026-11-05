@@ -1,91 +1,100 @@
-# 实验操作与判读
+# v7.0 实验操作
 
-## 正式实验
+## 建议顺序
 
-升级修复时使用新分支与新输出目录，保留旧 v690 数据作对照。先运行 README 的 smoke，确认 CPU/GPU 依赖与保存流程。它只有 0.12 秒，不能证明悬停成功。再运行前两个基础阶段，查看完整 20/25 秒任务与独立种子结果，最后扩展到全部课程。
+先执行测试与 smoke，再用 seed 42 跑课程；查看基础课门槛、critic_correction 与 forecast 指标后，再扩展到 43、44。
 
-```bash
-python main.py curriculum --device cuda --seed 42 --out runs/foundation42 \
-  --phases 01_hover_small 02_hover_recovery
+~~~bash
+pytest -q
+python main.py train --config configs/ctbr/smoke.json --device cpu --out runs/v700_smoke
+SEEDS=42 DEVICE=cuda bash scripts/run_ctbr_curriculum.sh runs/ctbr_v700
+~~~
 
-# 同目录继续全课程；已完成阶段保留原更新与优化器。
-python main.py curriculum --device cuda --seed 42 --out runs/foundation42
-```
+新实验必须使用空目录；相同命令和输出目录可继续课程。不要复用 ctbr_v691 目录，也不要在同一 run 里切换代码、控制频率或预测模式。旧检查点与 v3 不兼容。
 
-课程默认以独立门槛种子要求当前任务成功率≥90%，并回测已经完成的悬停、较快平飞和直线追踪锚点。只有通过已存在的锚点才会继续。门槛数据参与了课程决策，属于验证数据；最终测试应使用新种子。32/64 个样本只能作为推进门槛，最终比较建议至少 3 个训练种子，各使用 256 个以上测试回合并给出区间估计。
+## 课程
 
-每阶段预算至少应覆盖每环境两个完整截止时间，课程入口会拒绝低于该值的预算。默认 2000 万 / 32 × 0.001=625 秒/环境。BC、MC、验证额外计数，不从 PPO 预算中偷换。若训练结束仍有回合未完成，它们会作为 `unfinished_episodes` 报告，不进入成功率分母。
-
-## 单阶段、迁移与恢复
-
-```bash
-python main.py train --config configs/ctbr/03_goto_hold.json --device cuda \
-  --init-from runs/foundation42/02_hover_recovery/seed_42/checkpoints/best.pt \
-  --out runs/goto42 --seed 42
-
-python main.py train --config configs/ctbr/03_goto_hold.json --device cuda \
-  --resume runs/goto42/checkpoints/latest.pt --out runs/goto42 --seed 42 \
-  --physics-steps 30000000
-```
-
-迁移加载兼容 actor 与 critic 权重，优化器重新建立，并以新任务 MC 回报重新校准 critic。初始探索标准差按新配置建立。动作/观察、物理、奖励与探索时间常数必须一致；v680/v681 checkpoint 拒绝；同一接口的 v690 checkpoint 保持可读，并补入新的训练默认值供评估或显式迁移。需要改变这些定义时应新建模型与实验，不能默默重解释旧权重。
-
-恢复保留权重、优化器、PPO 计数、Torch RNG 与最佳记录，允许改变设备和增加总预算。恢复要求同一 Python 源码指纹与其他配置，且必须在原输出目录。**仿真环境与环境 RNG 没有序列化**：恢复会重新开始未完成回合，因此不承诺逐位复现中断前的连续轨迹。正常保存不会重置环境，长回合可跨多个 rollout 持续运行。课程重新进入时还会核验上一阶段最佳 checkpoint 的文件哈希，防止串错来源。
-
-## 模型与指标
-
-每阶段输出：
-
-| 文件 | 用途 |
+| 阶段 | 变化 |
 |---|---|
-| `config.json` | 合并默认值后的完整配置 |
-| `metrics.jsonl` | BC/DAgger、PPO、数值诊断、验证事件 |
-| `initialization_*.json` | BC 与每轮 DAgger 候选的完整任务对照 |
-| `gate_failure.json` | 门槛失败的类别、实测成功率、阈值及报告路径 |
-| `critic_warmup_heldout.json` | 预热后的独立随机策略 MC 检验 |
-| `initial_validation.json` | PPO 前初始化的固定种子成绩 |
-| `validation_*.json` / `calibration_*.json` | 更新后的确定性成绩与随机策略 critic 检验 |
-| `checkpoints/initial.pt` | 初始化完成后的对照模型 |
-| `checkpoints/best.pt` | 包含初始化在内的最佳模型 |
-| `checkpoints/latest.pt` | 最后一次 PPO 更新后的模型 |
-| `checkpoints/update_*.pt` | 按配置保存的中间更新 |
-| `training_summary.json` | 独立交互计数、来源、已完成及未完成回合 |
-| `first_anomaly.pt` | 首次数值异常的原始 rollout 与更新前状态，仅异常时出现 |
-| `gate_current.json` / `regression/*.json` | 当前课程与历史技能保留门槛 |
+| 01–03 | 悬停、小扰动恢复、移动定点保持 |
+| 04–09 | 近距低速跟随，加速度 0→0.25→0.5→1→1.5→2 |
+| 10–11 | 逐步加入转弯和 Singer 机动 |
+| 12 | 单独取消初速匹配 |
+| 13–15 | 距离上限 5→10→30 m |
+| 16–20 | 速度上限 4→6 m/s，距离上限 50 m，再转到 10–50 m、2–6 m/s |
+| 21–24 | 随机模式、切换间隔、jerk 预算、加速度 3 m/s² |
+| 25–30 | 速度 8 m/s、距离 70 m、OU 时间、快速切换、响应时间 |
+| 31–34 | 加速度 5 m/s²、速度 10 m/s、距离 100 m、持续 60 s |
 
-选择模型时先比较持续成功率，再比较安全到达完整截止时间的比例，最后比较末尾位置误差；提前崩溃不能靠“末尾样本为零”获得优先。相同前两项下，误差至少改善 max(1 cm, 原误差的 1%) 才替换最佳模型。
+每级 2000 万物理步是最大预算。程序先对父模型做两组种子的完整时长筛查，已掌握的级别跳过。训练通过多组当前任务和旧技能/精度门槛后提前升级；否则预算结束后仍失败就停止，并保留结果。
 
-`best_origin` 为 `bc_initial`、`bc_dagger_initial`、`transfer_initial`、`transfer_dagger_initial` 或 `ppo`。最佳模型仍来自初始化时，即使训练确实执行了很多更新，也只能说“PPO 尚无可观察收益”。课程总结同时保存来源、哈希与被选模型的本阶段 PPO 更新数；总训练更新数应查看 `training_summary.json`，不能使用最佳模型保存时的计数代替。
+01 级保留 BC/DAgger 初始化，02–04 级可进行带接受检查的教师迁移拟合；05 级起 transfer_dagger_updates=0。PPO 动作从不混入教师动作。初始化通过不是 PPO 改善。
 
-## 冻结评估
+训练混合比例按并行环境数四舍五入，因此小规模检查未必恰好 60/20/20。日志 training_distribution 给出实际比例。保留锚点轮换参与采样，所有锚点参与升级验证。
 
-```bash
-python main.py evaluate --device cuda --checkpoint runs/goto42/checkpoints/best.pt \
-  --seed 110042 --episodes 256 --out runs/goto42/test_det.json \
-  --trace-dir runs/goto42/traces
+## 单项运行、继续和迁移
 
-python main.py evaluate --device cuda --checkpoint runs/goto42/checkpoints/best.pt \
-  --seed 110042 --episodes 256 --stochastic --out runs/goto42/test_stochastic.json
-```
+~~~bash
+python main.py train --config configs/ctbr/01_hover_small.json \
+  --device cuda --out runs/v700_hover42 --seed 42
 
-可以用 `--config` 显式评估另一种兼容任务，或用 `--reference` 单独评估几何参考控制器。参考控制器从不与学习策略混合。轨迹文件为首批前两个样本的 20 ms 采样 NPZ，包含位置、动作与有效掩码；完成后的 padding 必须按掩码忽略。事件判定及误差统计仍在每个 1 ms 物理步进行。
+python main.py train --config configs/ctbr/01_hover_small.json \
+  --device cuda --out runs/v700_hover42 --seed 42 \
+  --resume runs/v700_hover42/checkpoints/latest.pt
+~~~
 
-比较 initial/best/latest 与参考控制器时保持配置、种子、episodes、num-envs 相同，核对 `initial_state_digest` 一致。环境随机生成器独立于策略采样；评估还会保存和恢复 Torch RNG，避免验证改变随后的训练随机序列。改变批大小会改变随机序列，不应继续声称同一测试集。
+单项 resume 只允许变更总预算和设备，必须保留相同源代码。在课程中运行的模型还需相同混合任务，应重新执行课程命令恢复。
 
-## 如何判断下一步
+单独在兼容 v3 模型间转移任务：
 
-- 几何参考控制器也失败：先检查控制可行性、飞行约束与任务难度，避免直接扩大 PPO。
-- BC 在完整基础课程中失败：先增加教师数据覆盖、检查动作单位和状态缩放；短回合成功不能替代持续悬停。
-- 初始策略合格而 PPO 退化：比较三份模型、条件 logprob 重算误差、KL、动作变化与实际执行器，核对首次异常快照。
-- critic MC 偏差持续显著：使用独立随机策略回报判断；增加完整 MC 样本或 critic 预热更新，必要时减小 critic 学习率。高机动未来随机性会带来不可消除的回报方差，RMSE 无法保证降至零。
-- 当前任务通过但锚点退化：课程停止；回到上一阶段权重，减小 actor 学习率或增加该阶段数据预算，再重新验证。
+~~~bash
+python main.py train --config configs/ctbr/05_near_a025.json --device cuda \
+  --out runs/v700_a025 --init-from PATH_TO_V3_BEST_CHECKPOINT
+~~~
 
-本分支移除了旧评估、ZIP/补丁分发脚本及旧接口专用测试，替换为新契约下的回归测试。历史结果不与新的持续追踪成功定义直接比较；不能把旧 95% 首次捕获率与新版完整末尾保持成功率等同。
+改变时钟、预测模块结构、奖励或 ValueNorm 接口需要新实验，不允许静默加载不匹配权重。
 
-## 初始化与缺失窗口诊断（6.9.1）
+## 独立评估
 
-`training.bc_segment_seconds` 默认 0.5，仅重启监督数据采集片段，不缩短 PPO 或验证回合；`initialization_episodes` 默认 32；冷启动 BC 的 `initialization_success_floor` 默认 0.9。监督损失现在是逐通道标准化误差，不能与原版未标准化 MSE 数值直接比较。判断能否飞行必须看完整 20 秒验证。
+~~~bash
+python main.py evaluate --checkpoint PATH_TO_V3_CHECKPOINT \
+  --config configs/ctbr/20_maneuver_pursuit.json --device cuda \
+  --seed 110042 --episodes 256 --out runs/test_det.json
 
-失败会写 `gate_failure.json`，命令行以状态码 2 结束，无需再将正常门槛停止理解为程序崩溃。重新执行失败初始化的 resume 也不能绕过门槛。第一阶段没有历史锚点，门槛失败直接指当前悬停任务未通过。失败课程的 `status` 为 `failed_gate`，不再显示容易误解的 `improved_by_training`。
+python main.py evaluate --checkpoint PATH_TO_V3_CHECKPOINT \
+  --config configs/ctbr/20_maneuver_pursuit.json --device cuda --stochastic \
+  --seed 110042 --episodes 256 --out runs/test_stoch.json
+~~~
 
-评估 schema 升至 v3：`mean_tail_position_rmse`、`mean_tail_velocity_rmse`、`mean_tail_within_fraction` 仅对具有完整末尾窗口的回合求均值；无此类回合时为 null。检查 `full_tail_episodes` 与 `observed_tail_episodes`，不能忽略提前失败的样本。`mean_observed_tail_position_rmse` 另报至少观察到一个窗口样本的回合，含部分窗口。成功率分母始终包括所有评估回合。
+--reference 运行相同决策频率的几何控制器；--trace-dir 可以保存轨迹。critic_matches_policy 仅在随机策略评估时为 true。确定性追踪回报不能直接当作随机策略价值真值。
+
+最终脚本根据 curriculum_summary.json 的真实选定模型和任务 profile 评估，支持最后一级被跳过的情况。
+
+## 关键输出
+
+- config.json、curriculum_manifest.json：完整配置及课程/源代码约束。
+- metrics.jsonl：PPO、预测器拟合、持续纠偏、实际采样分配。
+- initial_validation.json、validation_*.json：完整时长确定性表现与冻结预测误差。
+- calibration_*.json：随机策略初始价值校准测量。
+- critic_correction_*.json：持续 MC 纠偏的训练/校准验证种子、拟合前后误差、接受或回滚。
+- gate/summary.json、promotion_*/summary.json：两组当前任务及旧技能精度门槛。
+- phase_skip.json：已掌握任务复用的真实父模型，不代表该级训练过。
+- curriculum_summary.json：通过状态、模型来源、选定路径和 SHA256。
+- first_anomaly.pt：首个 PPO/采样数值异常的状态和 rollout。
+- checkpoints/initial.pt、best.pt、latest.pt、update_*.pt：保存 Actor、critic、预测器、ValueNorm、三个优化器与随机状态。
+
+预测报告中的 learned、constant_velocity、constant_acceleration 为相同有效窗口上的每坐标位置 RMSE，按预测时长分别报告。预测训练误差必须与独立冻结评估分开看。样本跨终止或未来不足时不计入，样本数同时输出。
+
+prediction_fit.accepted 表示预测更新是否通过拟合保护检查；updates 只统计接受的优化步，attempted_updates 包含被回滚的尝试。PPO 与课程日志同样区分“更新后通过”和“相对初始化确有改善”。
+
+## 对照开关
+
+创建新的 profile 和输出目录，其他参数保持一致：
+
+- prediction.enabled=false：关闭历史预测特征。
+- prediction.mode=constant_velocity / constant_acceleration / lstm：比较预测模型。
+- critic.value_norm=false：关闭价值目标归一化。
+- training.mc_calibration_every_updates=0：关闭持续纠偏，保留初始化预热和校准测量。
+- policy.decision_steps=1 或 10：比较 1 kHz 和 100 Hz 决策。
+
+频率对照还应保持相同物理 rollout 时长与 BC 数据采样间隔：例如 410×10 ms 对应约 4100×1 ms；bc_stride=2 对应 20。探索相关性、gamma 和 lambda 自动按秒换算；历史窗口覆盖的物理时长也需匹配。分别改变 ValueNorm、MC、预测器与采样分布才能判断各自贡献。

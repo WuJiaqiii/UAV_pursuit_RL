@@ -6,14 +6,16 @@ import json
 import math
 from pathlib import Path
 import torch
-import torch.nn.functional as F
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
-from .config import fingerprint, interface
+from .config import fingerprint, interface, decision_dt
 from .checkpoint import new_model, save, load, write_json, source_fingerprint
 from .environment import CTBRBatch
 from .control import teacher
 from .evaluation import evaluate, score, improved
 from .errors import ExperimentGateError
+from .value_learning import fit_critic, calibrate_critic
+from .mixture import training_env, target_positions
+from pursuit_rl.learning.prediction import supervised_windows, fit_predictor
 
 
 def emit(root, event, **fields):
@@ -37,7 +39,8 @@ def imitation_data(c, model=None, seed=10000):
     labels = []
     tick = 0
     count = 0
-    segment_ticks = round(c["training"]["bc_segment_seconds"] / c["physics"]["dt"])
+    segment_ticks = round(c["training"]["bc_segment_seconds"] / env.decision_dt)
+    interactions = 0
     while count < c["training"]["bc_samples"]:
         target = teacher(env)
         if tick % c["training"]["bc_stride"] == 0:
@@ -53,6 +56,7 @@ def imitation_data(c, model=None, seed=10000):
         )
         raw = torch.atanh(action.clamp(-0.999999, 0.999999))
         (obs, priv), _, done, _, _ = env.step(action, raw)
+        interactions += env.last_physics_steps
         if bool(done.any()):
             obs, priv = env.reset(done)
         tick += 1
@@ -61,7 +65,7 @@ def imitation_data(c, model=None, seed=10000):
     return (
         torch.cat(states)[: c["training"]["bc_samples"]],
         torch.cat(labels)[: c["training"]["bc_samples"]],
-        tick * env.n,
+        interactions,
     )
 
 
@@ -74,8 +78,9 @@ def fit_actor(model, data, updates, batch_size):
     """
     x, y = data
     first = model.actor[0]
-    x = x.clone()
-    x[:, 21:] = 0
+    inputs = x
+    x = inputs.new_zeros(len(inputs), first.in_features)
+    x[:, :21] = inputs[:, :21]
     center = x.mean(0)
     scale = x.std(0, unbiased=False).clamp_min(0.01)
     scale[21:] = 1
@@ -111,43 +116,6 @@ def fit_actor(model, data, updates, batch_size):
     return float(loss.detach()) if loss is not None else None
 
 
-def fit_critic(model, data, updates, batch_size):
-    x, y = data
-    with torch.no_grad():
-        before = float((model.values_tensor(x) - y).square().mean().sqrt())
-    # Episode starts are only one of ~1000 MC samples in a 20 s flight.
-    # Oversample them so acquisition-state value is not sacrificed to steady states.
-    starts = (x[:, 31] >= x[:, 31].max() - 1e-8).nonzero(as_tuple=True)[0]
-    size = min(batch_size, len(x))
-    n_start = max(1, size // 8)
-    for _ in range(updates):
-        ids = torch.cat(
-            (
-                torch.randint(len(x), (size - n_start,), device=model.device),
-                starts[torch.randint(len(starts), (n_start,), device=model.device)],
-            )
-        )
-        loss = F.huber_loss(model.critic(x[ids]).squeeze(-1), y[ids])
-        if not bool(torch.isfinite(loss)):
-            raise FloatingPointError("Nonfinite critic fit")
-        model.critic_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            model.critic.parameters(), 0.5, error_if_nonfinite=True
-        )
-        model.critic_optimizer.step()
-    with torch.no_grad():
-        after = float((model.values_tensor(x) - y).square().mean().sqrt())
-    return dict(
-        samples=len(y),
-        updates=updates,
-        fit_rmse_before=before,
-        fit_rmse_after=after,
-        initial_state_samples=len(starts),
-        initial_state_batch_fraction=n_start / size,
-    )
-
-
 def initialization_validation(model, c, root, progress, label):
     report, _ = evaluate(
         model,
@@ -170,7 +138,7 @@ def initialization_validation(model, c, root, progress, label):
     return report
 
 
-def train(c, out, resume=None, init_from=None):
+def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None):
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
     root = Path(out).resolve()
@@ -200,8 +168,18 @@ def train(c, out, resume=None, init_from=None):
         parent_physics_steps=0,
         cumulative_ppo_physics_steps=0,
         parent=None,
+        replay_fingerprints={
+            k: fingerprint(v) if v else None for k, v in (replay or {}).items()
+        },
+        prediction_updates=0,
+        mc_fit_updates=0,
+        mc_calibration_rounds=0,
+        last_mc_calibration_update=0,
+        promotion_passed=False,
         best_score=[-1.0, -1.0, -1e9],
         best_origin=None,
+        initial_score=None,
+        selected_improved_over_initial=False,
     )
     if resume:
         model, old, saved = load(resume, c["device"], optimizers=True)
@@ -213,16 +191,24 @@ def train(c, out, resume=None, init_from=None):
             raise ValueError(
                 "Resume source code changed; start a new run with explicit init-from"
             )
-        if tr["physics_steps"] < saved["progress"]["physics_steps"]:
+        if (
+            tr["physics_steps"] < saved["progress"]["physics_steps"]
+            and tr["physics_steps"] != old["training"]["physics_steps"]
+        ):
             raise ValueError("Resume budget below completed work")
+        expected_replay = progress["replay_fingerprints"]
         progress.update(saved["progress"])
+        if progress["replay_fingerprints"] != expected_replay:
+            raise ValueError(
+                "Resume task mixture changed; use the same curriculum launcher"
+            )
         torch.set_rng_state(saved["torch_rng"])
         if saved["cuda_rng"] is not None and str(model.device).startswith("cuda"):
             torch.cuda.set_rng_state_all(saved["cuda_rng"])
         if (
-            tr["physics_steps"] == progress["physics_steps"]
-            and (root / "training_summary.json").exists()
-        ):
+            tr["physics_steps"] <= progress["physics_steps"]
+            or (promotion_check is not None and progress["promotion_passed"])
+        ) and (root / "training_summary.json").exists():
             return json.loads((root / "training_summary.json").read_text())
         emit(
             root,
@@ -230,6 +216,8 @@ def train(c, out, resume=None, init_from=None):
             physics_steps=progress["physics_steps"],
             note="Unfinished environments restart; completed updates/optimizers retained",
         )
+        if promotion_check is None:
+            progress["promotion_passed"] = False
     else:
         model = new_model(c)
         if init_from:
@@ -238,8 +226,7 @@ def train(c, out, resume=None, init_from=None):
                 raise ValueError(
                     "Transfer would change action, observation, dynamics, reward or exploration contract"
                 )
-            model.actor.load_state_dict(parent.actor.state_dict())
-            model.critic.load_state_dict(parent.critic.state_dict())
+            model.load_state_dict(parent.state_dict())
             progress["parent_physics_steps"] = saved["progress"][
                 "cumulative_ppo_physics_steps"
             ]
@@ -377,6 +364,7 @@ def train(c, out, resume=None, init_from=None):
             round(e["time"] / c["physics"]["dt"]) for e in initial["episodes_detail"]
         )
         progress["best_score"] = list(score(initial))
+        progress["initial_score"] = list(score(initial))
         progress["best_origin"] = origin
         progress["cumulative_ppo_physics_steps"] = progress["parent_physics_steps"]
         for name in ("initial", "best", "latest"):
@@ -415,7 +403,14 @@ def train(c, out, resume=None, init_from=None):
         write_json(root / "gate_failure.json", details)
         raise ExperimentGateError(details)
     write_json(root / "config.json", c)
-    env = CTBRBatch(c, seed=c["seed"] + 7919 * progress["ppo_updates"])
+    env = training_env(c, replay, seed=c["seed"] + 7919 * progress["ppo_updates"])
+    emit(
+        root,
+        "training_distribution",
+        task_environment_counts=env.task_counts,
+        physics_hz=1 / env.dt,
+        decision_hz=1 / env.decision_dt,
+    )
     obs, priv = env.observe()
     episode_start = torch.ones(env.n, dtype=torch.bool, device=env.device)
     next_validation = (progress["physics_steps"] // tr["validation_every"] + 1) * tr[
@@ -424,7 +419,10 @@ def train(c, out, resume=None, init_from=None):
     while progress["physics_steps"] < tr["physics_steps"]:
         ticks = min(
             tr["rollout_steps"],
-            math.ceil((tr["physics_steps"] - progress["physics_steps"]) / env.n),
+            math.ceil(
+                (tr["physics_steps"] - progress["physics_steps"])
+                / (env.n * env.decision_steps)
+            ),
         )
         buf = TensorRolloutBuffer(
             ticks,
@@ -440,12 +438,17 @@ def train(c, out, resume=None, init_from=None):
             },
         )
         buf.physics = copy.deepcopy(c["physics"])
-        buf.action_semantics = "ctbr-v2"
+        buf.action_semantics = "ctbr-held-v3"
+        buf.decision_dt = env.decision_dt
         records = []
+        rollout_physics_steps = 0
+        prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
         for tick in range(ticks):
             try:
                 action, raw, lp, value = model.sample_tensor(obs, priv)
                 (nobs, npriv), reward, term, trunc, completed = env.step(action, raw)
+                prediction_positions[tick] = target_positions(env).float()
+                rollout_physics_steps += env.last_physics_steps
             except Exception as exc:
                 if not (root / "first_anomaly.pt").exists():
                     snapshot = buf.diagnostic_snapshot()
@@ -521,7 +524,7 @@ def train(c, out, resume=None, init_from=None):
                     root / "first_anomaly.pt",
                 )
             raise
-        progress["physics_steps"] += ticks * env.n
+        progress["physics_steps"] += rollout_physics_steps
         progress["decision_transitions"] += ticks * env.n
         progress["ppo_updates"] += 1
         progress["cumulative_ppo_physics_steps"] = (
@@ -529,6 +532,26 @@ def train(c, out, resume=None, init_from=None):
         )
         progress["completed_episodes"] += len(records)
         progress["successful_episodes"] += sum(r["success"] for r in records)
+        if model.predictor_optimizer is not None:
+            history = buf.obs[:, :, env.base_actor_dim :].reshape(
+                ticks, env.n, c["prediction"]["history_steps"], 10
+            )
+            data = supervised_windows(
+                history,
+                prediction_positions,
+                buf.terminated | buf.truncated,
+                [round(h / env.decision_dt) for h in c["prediction"]["horizons_s"]],
+                c["prediction"]["max_samples"],
+            )
+            prediction_fit = fit_predictor(model, data)
+            progress["prediction_updates"] += prediction_fit["updates"]
+            emit(
+                root,
+                "prediction_fit",
+                ppo_update=progress["ppo_updates"],
+                **prediction_fit,
+            )
+            del data
         diagnostics = stats.get("diagnostics")
         if (
             diagnostics
@@ -557,7 +580,29 @@ def train(c, out, resume=None, init_from=None):
             ),
             metrics={k: v for k, v in stats.items() if k != "diagnostics"},
             diagnostics=diagnostics,
+            task_results={
+                name: dict(
+                    episodes=sum(r["task"] == name for r in records),
+                    successes=sum(r["task"] == name and r["success"] for r in records),
+                )
+                for name in env.task_counts
+            },
         )
+        interval = tr["mc_calibration_every_updates"]
+        if interval and (
+            progress["ppo_updates"] - progress["last_mc_calibration_update"] >= interval
+            or progress["physics_steps"] >= tr["physics_steps"]
+        ):
+            correction = calibrate_critic(model, c, root, progress)
+            emit(
+                root,
+                "critic_correction",
+                ppo_update=progress["ppo_updates"],
+                accepted=correction["accepted"],
+                before=correction["before"],
+                after=correction["final"],
+                fit=correction["fit"],
+            )
         if (
             progress["physics_steps"] >= next_validation
             or progress["physics_steps"] >= tr["physics_steps"]
@@ -591,8 +636,21 @@ def train(c, out, resume=None, init_from=None):
             if improved(report, progress["best_score"]):
                 progress["best_score"] = list(score(report))
                 progress["best_origin"] = "ppo"
+                progress["selected_improved_over_initial"] = improved(
+                    report, progress["initial_score"]
+                )
                 save(ckpt / "best.pt", model, c, progress, "ppo")
-            next_validation += tr["validation_every"]
+            if promotion_check is not None and promotion_check(model, c, progress):
+                progress["promotion_passed"] = True
+                progress["best_score"] = list(score(report))
+                progress["best_origin"] = "ppo"
+                progress["selected_improved_over_initial"] = improved(
+                    report, progress["initial_score"]
+                )
+                save(ckpt / "best.pt", model, c, progress, "ppo")
+            next_validation = (
+                progress["physics_steps"] // tr["validation_every"] + 1
+            ) * tr["validation_every"]
         save(ckpt / "latest.pt", model, c, progress, "ppo")
         if progress["ppo_updates"] % tr["save_every_updates"] == 0:
             save(
@@ -602,8 +660,10 @@ def train(c, out, resume=None, init_from=None):
                 progress,
                 "ppo",
             )
+        if progress["promotion_passed"]:
+            break
     result = dict(
-        schema="pursuit-direct-ctbr-training-v2",
+        schema="pursuit-direct-ctbr-training-v3",
         **progress,
         total_local_interactions=sum(
             progress[k]
@@ -617,6 +677,14 @@ def train(c, out, resume=None, init_from=None):
         unfinished_episodes=int((env.steps > 0).sum()),
         maximum_unfinished_elapsed_s=float(env.steps.max()) * env.dt,
         source_fingerprint=source_fingerprint(),
+        physics_hz=1 / env.dt,
+        decision_hz=1 / env.decision_dt,
+        task_environment_counts=env.task_counts,
+        stop_reason=(
+            "curriculum_gate_passed"
+            if progress["promotion_passed"]
+            else "budget_reached"
+        ),
         note="Initial/best/latest must be compared; completed training episodes exclude unfinished trajectories.",
     )
     write_json(root / "training_summary.json", result)

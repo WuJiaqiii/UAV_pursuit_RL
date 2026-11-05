@@ -4,7 +4,7 @@ from pathlib import Path
 import math
 import pytest
 import torch
-from pursuit_rl.ctbr.config import load, validate, interface
+from pursuit_rl.ctbr.config import load, validate, interface, observation_dims
 from pursuit_rl.ctbr.control import thrust_from_action, thrust_to_action, teacher
 from pursuit_rl.ctbr.environment import CTBRBatch
 from pursuit_rl.ctbr.checkpoint import new_model, save, load as load_model
@@ -14,16 +14,17 @@ from pursuit_rl.ctbr.curriculum import run
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
 
 
-def test_all_profiles_and_single_clock():
+def test_all_profiles_and_two_clocks():
     for p in Path("configs/ctbr").glob("*.json"):
         if p.stem == "plan":
             continue
         c = load(p)
         env = CTBRBatch(c, n=2)
-        assert env.actor_dim == 32 + 4 * c["policy"]["history_steps"] + 2
+        assert env.actor_dim == observation_dims(c)[1]
         assert env.critic_dim == env.actor_dim + 44
         assert env.dt == 0.001
-        assert math.isclose(env.gamma * env.gae_lambda, math.exp(-0.001 / 3))
+        assert env.decision_dt == 0.01
+        assert math.isclose(env.gamma * env.gae_lambda, math.exp(-0.01 / 3))
 
 
 def test_strict_config(small, tmp_path):
@@ -129,7 +130,7 @@ def test_actor_has_no_future_target_latent_information(small):
 
 
 def test_random_target_is_reproducible_bounded_and_no_pursuer_pullback():
-    c = load("configs/ctbr/10_random_high.json")
+    c = load("configs/ctbr/34_random_high.json")
     a, b = CTBRBatch(c, n=4, seed=77), CTBRBatch(c, n=4, seed=77)
     b.plant.pursuer.pos.add_(10000)
     changed = False
@@ -280,7 +281,7 @@ def test_training_resume_and_transfer_end_to_end(small, tmp_path):
 
 def test_curriculum_rejects_skipped_prerequisites_and_short_budget(tmp_path):
     with pytest.raises(ValueError, match="prefix"):
-        run("configs/ctbr/plan.json", tmp_path / "skip", phases=["10_random_high"])
+        run("configs/ctbr/plan.json", tmp_path / "skip", phases=["34_random_high"])
     with pytest.raises(ValueError, match="two full"):
         run("configs/ctbr/plan.json", tmp_path / "short", steps=100)
 
@@ -296,11 +297,13 @@ def test_curriculum_two_stages_retention_and_restart(small, tmp_path):
         phases.append(dict(name=name, profile=f"{name}.json", retention_anchor=True))
     plan = tmp_path / "plan.json"
     plan.write_text(
-        json.dumps(dict(schema="pursuit-direct-ctbr-curriculum-v2", phases=phases))
+        json.dumps(dict(schema="pursuit-direct-ctbr-curriculum-v3", phases=phases))
     )
     result = run(plan, tmp_path / "experiment", episodes=2)
     assert len(result) == 2 and all(r["passed"] for r in result)
-    assert len(result[-1]["retention"]) == 1
+    assert len(result[-1]["retention"]) == 2
+    assert result[-1]["status"] == "skipped_already_mastered"
+    assert result[-1]["selected_local_ppo_updates"] == 0
     hashes = [r["selected_checkpoint_sha256"] for r in result]
     again = run(plan, tmp_path / "experiment", episodes=2)
     assert [r["selected_checkpoint_sha256"] for r in again] == hashes

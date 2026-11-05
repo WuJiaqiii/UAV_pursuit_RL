@@ -1,14 +1,66 @@
-"""Sequential direct-CTBR curriculum with source lineage and skill retention."""
+"""Capability screening, small difficulty increments, and retained-skill gates."""
 
 import copy
 import hashlib
 import json
 from pathlib import Path
-from .config import load as config_load
-from .checkpoint import load, write_json
+from .config import load as config_load, fingerprint, validate
+from .checkpoint import load, write_json, source_fingerprint
 from .training import train
 from .evaluation import evaluate
 from .errors import ExperimentGateError
+
+SCHEMA = "pursuit-direct-ctbr-curriculum-v3"
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None
+
+
+def gate(model, c, sentinels, directory, episodes, seed, minimum_success, plan, label):
+    directory = Path(directory) / label
+    current = []
+    for offset in plan.get("gate_seed_offsets", [79000, 179000]):
+        report, _ = evaluate(model, c, episodes, offset + seed)
+        write_json(directory / f"current_{offset + seed}.json", report)
+        current.append(
+            dict(
+                seed=offset + seed,
+                success_rate=report["success_rate"],
+                tail_rmse=report["mean_tail_position_rmse"],
+                failures=report["failures"],
+            )
+        )
+    retained = []
+    relative = plan.get("retention_rmse_relative_budget", 0.2)
+    slack = plan.get("retention_rmse_absolute_slack_m", 0.05)
+    for anchor in sentinels:
+        for reference in anchor["reference"]:
+            report, _ = evaluate(model, anchor["config"], episodes, reference["seed"])
+            write_json(
+                directory / "retention" / f"{anchor['name']}_{reference['seed']}.json",
+                report,
+            )
+            rmse = report["mean_tail_position_rmse"]
+            bound = reference["tail_rmse"] * (1 + relative) + slack
+            retained.append(
+                dict(
+                    task=anchor["name"],
+                    seed=reference["seed"],
+                    success_rate=report["success_rate"],
+                    tail_rmse=rmse,
+                    rmse_budget=bound,
+                    passed=report["success_rate"] >= minimum_success
+                    and rmse is not None
+                    and rmse <= bound,
+                )
+            )
+    passed = all(r["success_rate"] >= minimum_success for r in current) and all(
+        r["passed"] for r in retained
+    )
+    result = dict(passed=passed, current=current, retention=retained)
+    write_json(directory / "summary.json", result)
+    return result
 
 
 def run(
@@ -23,29 +75,69 @@ def run(
 ):
     path = Path(plan_path).resolve()
     plan = json.loads(path.read_text())
-    if plan.get("schema") != "pursuit-direct-ctbr-curriculum-v2":
+    if plan.get("schema") != SCHEMA:
         raise ValueError("Wrong curriculum schema")
     if not 0 <= minimum_success <= 1 or episodes < 1:
         raise ValueError("Invalid validation gate")
+    for key, default in (
+        ("gate_seed_offsets", [79000, 179000]),
+        ("retention_seed_offsets", [89000, 189000]),
+    ):
+        offsets = plan.get(key, default)
+        if (
+            len(offsets) < 2
+            or len(set(offsets)) != len(offsets)
+            or any(type(v) is not int or v < 0 for v in offsets)
+        ):
+            raise ValueError(
+                "Each curriculum gate requires at least two distinct validation seeds"
+            )
+    if (
+        plan.get("retention_rmse_relative_budget", 0.2) < 0
+        or plan.get("retention_rmse_absolute_slack_m", 0.05) < 0
+    ):
+        raise ValueError("Invalid retention precision budget")
     names = [p["name"] for p in plan["phases"]]
+    if (
+        not names
+        or len(set(names)) != len(names)
+        or any(n in (".", "..") or Path(n).name != n for n in names)
+    ):
+        raise ValueError("Curriculum phase names must be unique directory names")
     if phases and (set(phases) - set(names)):
         raise ValueError("Unknown curriculum phases")
-    # A prefix only: an arbitrary subset could silently skip required skills.
-    selected = plan["phases"]
-    if phases:
-        if phases != names[: len(phases)]:
-            raise ValueError("Run a prefix of the ordered plan, or the full plan")
-        selected = selected[: len(phases)]
+    if phases and phases != names[: len(phases)]:
+        raise ValueError("Run a prefix of the ordered plan, or the full plan")
+    selected = plan["phases"][: len(phases)] if phases else plan["phases"]
+    profiles = {
+        phase["name"]: config_load(path.parent / phase["profile"], device, seed)
+        for phase in plan["phases"]
+    }
     root = Path(out).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    parent = None
-    rows = []
-    sentinels = []
-    for phase in selected:
-        c = config_load(path.parent / phase["profile"], device, seed)
+    manifest = dict(
+        plan=plan,
+        seed=seed,
+        episodes=episodes,
+        minimum_success=minimum_success,
+        source_fingerprint=source_fingerprint(),
+        profile_fingerprints={name: fingerprint(c) for name, c in profiles.items()},
+    )
+    manifest_path = root / "curriculum_manifest.json"
+    if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
+        raise ValueError(
+            "Curriculum plan, source or gate configuration changed; use a new output root"
+        )
+    write_json(manifest_path, manifest)
+    parent, recent = None, None
+    rows, sentinels = [], []
+    for index, phase in enumerate(selected):
+        c = copy.deepcopy(profiles[phase["name"]])
+        if c["task"]["name"] != phase["name"]:
+            raise ValueError("Phase name and task profile disagree")
         if steps is not None:
             c["training"]["physics_steps"] = steps
-        # 2 full deadlines of continuous PPO sampling minimum for a formal run.
+        validate(c)
         minimum_steps = (
             2 * c["num_envs"] * round(c["task"]["duration"] / c["physics"]["dt"])
         )
@@ -55,82 +147,181 @@ def run(
             )
         directory = root / phase["name"] / f"seed_{seed}"
         latest = directory / "checkpoints/latest.pt"
-        if latest.exists():
+        skip_file = directory / "phase_skip.json"
+        screening = None
+        if skip_file.exists():
+            state = json.loads(skip_file.read_text())
+            comparison = copy.deepcopy(c)
+            comparison["training"]["physics_steps"] = 0
+            if state["parent_sha256"] != digest(parent) or state[
+                "config_fingerprint"
+            ] != fingerprint(comparison):
+                raise ValueError(
+                    "Skipped phase configuration/parent changed; use a new output root"
+                )
+            best = Path(parent)
+            status = "skipped_already_mastered"
+        elif latest.exists():
             _, _, saved = load(latest, device)
-            expected = (
-                hashlib.sha256(Path(parent).read_bytes()).hexdigest()
-                if parent
-                else None
-            )
             actual = (
                 saved["progress"]["parent"]["sha256"]
                 if saved["progress"]["parent"]
                 else None
             )
-            if actual != expected:
+            if actual != digest(parent):
                 raise ValueError(
                     "Parent checkpoint changed: use a new curriculum output root"
                 )
-            train(c, directory, resume=latest)
+            best = directory / "checkpoints/best.pt"
+            status = "trained"
         else:
-            train(c, directory, init_from=parent)
-        best = directory / "checkpoints/best.pt"
-        model, _, saved = load(best, device)
-        current, _ = evaluate(model, c, episodes, 79000 + seed)
-        write_json(directory / "gate_current.json", current)
-        retained = []
-        for previous in sentinels:
-            old = config_load(path.parent / previous["profile"], device, seed)
-            report, _ = evaluate(model, old, episodes, 89000 + seed)
-            write_json(directory / "regression" / f"{previous['name']}.json", report)
-            retained.append(
-                dict(task=previous["name"], success_rate=report["success_rate"])
+            if parent is not None and plan.get("prescreen", True):
+                model, _, _ = load(parent, device)
+                screening = gate(
+                    model,
+                    c,
+                    sentinels,
+                    root / "screening",
+                    episodes,
+                    seed,
+                    minimum_success,
+                    plan,
+                    phase["name"],
+                )
+            if screening is not None and screening["passed"]:
+                comparison = copy.deepcopy(c)
+                comparison["training"]["physics_steps"] = 0
+                write_json(directory / "config.json", c)
+                write_json(
+                    skip_file,
+                    dict(
+                        parent_sha256=digest(parent),
+                        config_fingerprint=fingerprint(comparison),
+                        selected_checkpoint=str(parent),
+                    ),
+                )
+                best = Path(parent)
+                status = "skipped_already_mastered"
+            else:
+                best = directory / "checkpoints/best.pt"
+                status = "trained"
+        if status != "skipped_already_mastered":
+            anchor = (
+                sentinels[(seed + index) % len(sentinels)]["config"]
+                if sentinels
+                else None
             )
-        status = (
-            "improved_by_training"
-            if saved["origin"] == "ppo"
-            else "passed_with_initialization"
+            replay = dict(recent=recent, anchor=anchor) if recent or anchor else None
+
+            def promotion_check(model, current_config, progress):
+                if (
+                    not plan.get("early_promotion", True)
+                    or progress["physics_steps"] < minimum_steps
+                ):
+                    return False
+                report = gate(
+                    model,
+                    current_config,
+                    sentinels,
+                    directory,
+                    episodes,
+                    seed,
+                    minimum_success,
+                    plan,
+                    f"promotion_{progress['ppo_updates']:05d}",
+                )
+                return report["passed"]
+
+            train(
+                c,
+                directory,
+                resume=latest if latest.exists() else None,
+                init_from=parent if not latest.exists() else None,
+                replay=replay,
+                promotion_check=promotion_check,
+            )
+        model, _, saved = load(best, device)
+        result = (
+            screening
+            if status == "skipped_already_mastered" and screening
+            else gate(
+                model,
+                c,
+                sentinels,
+                directory,
+                episodes,
+                seed,
+                minimum_success,
+                plan,
+                "gate",
+            )
         )
-        passed = current["success_rate"] >= minimum_success and all(
-            r["success_rate"] >= minimum_success for r in retained
+        origin = saved["origin"]
+        if status == "trained":
+            status = (
+                "improved_by_training"
+                if origin == "ppo"
+                and saved["progress"]["selected_improved_over_initial"]
+                else (
+                    "passed_after_ppo"
+                    if origin == "ppo"
+                    else "passed_with_initialization"
+                )
+            )
+        local_updates = (
+            saved["progress"]["ppo_updates"] if best.parent.parent == directory else 0
         )
-        if not passed:
-            status = "failed_gate"
         row = dict(
             phase=phase["name"],
-            passed=passed,
-            status=status,
-            best_origin=saved["origin"],
-            selected_local_ppo_updates=saved["progress"]["ppo_updates"],
-            selected_checkpoint_sha256=hashlib.sha256(best.read_bytes()).hexdigest(),
-            current_success_rate=current["success_rate"],
-            retention=retained,
+            profile=str(path.parent / phase["profile"]),
+            passed=result["passed"],
+            status=status if result["passed"] else "failed_gate",
+            best_origin=origin,
+            selected_local_ppo_updates=local_updates,
+            selected_checkpoint=str(best),
+            selected_checkpoint_sha256=digest(best),
+            current_success_rate=min(r["success_rate"] for r in result["current"]),
+            current=result["current"],
+            retention=result["retention"],
         )
         rows.append(row)
         write_json(
             root / "curriculum_summary.json",
             dict(
-                schema=plan["schema"],
+                schema=SCHEMA,
                 seed=seed,
                 phases=rows,
-                note="Gate seeds are validation data; use fresh seeds for final tests. Passing with initialization is not PPO improvement.",
+                note="Skipped phases reuse an unchanged checkpoint. Gate/MC hold-out seeds are validation data; reserve fresh final-test seeds.",
             ),
         )
-        if not passed:
+        if not result["passed"]:
             details = dict(
                 event="curriculum_gate_failed",
                 phase=phase["name"],
-                success_rate=current["success_rate"],
+                success_rate=row["current_success_rate"],
                 minimum_success=minimum_success,
-                failures=current["failures"],
-                retention=retained,
-                report=str(directory / "gate_current.json"),
+                retention=result["retention"],
+                report=str(directory / "gate/summary.json"),
                 checkpoint=str(best),
-                message=f"{phase['name']}: current success {current['success_rate']:.1%}, required {minimum_success:.1%}; check current-task and retained-skill reports.",
+                message=f"{phase['name']} failed current-task or retained-skill/precision gates; results preserved",
             )
             write_json(directory / "gate_failure.json", details)
             raise ExperimentGateError(details)
         if phase.get("retention_anchor", False):
-            sentinels.append(phase)
+            reference = []
+            for offset in plan.get("retention_seed_offsets", [89000, 189000]):
+                report, _ = evaluate(model, c, episodes, offset + seed)
+                if report["mean_tail_position_rmse"] is None:
+                    raise RuntimeError(
+                        "Retained-skill anchor requires complete tail observations"
+                    )
+                write_json(directory / f"anchor_reference_{offset + seed}.json", report)
+                reference.append(
+                    dict(
+                        seed=offset + seed, tail_rmse=report["mean_tail_position_rmse"]
+                    )
+                )
+            sentinels.append(dict(name=phase["name"], config=c, reference=reference))
+        recent = c
         parent = best
     return rows

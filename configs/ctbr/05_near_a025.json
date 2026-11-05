@@ -1,34 +1,38 @@
 {
   "task": {
-    "name": "06_smooth_turns",
-    "kind": "circle",
+    "kind": "maneuver",
     "distance": [
       0,
       2
     ],
     "speed": [
-      2,
-      4
+      0.5,
+      2
     ],
-    "max_accel": 1.5,
-    "duration": 35,
+    "max_accel": 0.25,
+    "duration": 45,
     "radius": 2.0,
     "velocity_tolerance": 2.0,
-    "initial_tilt_deg": 10,
-    "initial_velocity_noise": 0.3,
-    "randomization": 0.7,
-    "match_initial_velocity": true,
     "tail_seconds": 10,
     "minimum_tail_fraction": 0.9,
+    "initial_tilt_deg": 10,
+    "initial_velocity_noise": 0.3,
+    "randomization": 1.0,
+    "match_initial_velocity": true,
     "switch_interval": [
       1.5,
       3.0
     ],
     "ou_time": 0.6,
-    "jerk_limit": 10.0
+    "jerk_limit": 10.0,
+    "response_time_s": 0.4,
+    "motion_patterns": [
+      3
+    ],
+    "name": "05_near_a025"
   },
   "training": {
     "physics_steps": 20000000,
-    "transfer_dagger_updates": 500
+    "transfer_dagger_updates": 0
   }
 }

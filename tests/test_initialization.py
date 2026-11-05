@@ -123,7 +123,7 @@ def test_no_tail_samples_are_null_not_perfect_tracking(small):
     json.dumps(report, allow_nan=False)
 
 
-def test_previous_v690_checkpoint_keeps_exact_actor_and_receives_training_defaults(
+def test_same_schema_checkpoint_keeps_exact_actor_and_receives_training_defaults(
     small, tmp_path
 ):
     model = new_model(small)

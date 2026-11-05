@@ -8,6 +8,8 @@ from pathlib import Path
 import torch
 from .environment import CTBRBatch
 from .control import teacher
+from pursuit_rl.learning.prediction import PredictionMetrics
+from .config import decision_dt
 
 
 @torch.no_grad()
@@ -28,6 +30,7 @@ def evaluate(
     states = []
     targets = []
     signatures = []
+    forecast_reports = []
     cuda = str(c["device"]).startswith("cuda")
     devices = list(range(torch.cuda.device_count())) if cuda else []
     with torch.random.fork_rng(devices=devices):
@@ -49,9 +52,16 @@ def evaluate(
             block_reward = torch.zeros(count, device=env.device)
             length = 0
             trace = []
-            stride = max(1, round(0.02 / env.dt))
-            for tick in range(env.max_steps + 1):
+            forecast = (
+                PredictionMetrics(model, env.decision_dt)
+                if model is not None and model.predictor is not None
+                else None
+            )
+            stride = max(1, round(0.02 / env.decision_dt))
+            for tick in range(env.max_decision_steps + 1):
                 active = ~env.finished
+                if forecast is not None:
+                    forecast.begin(env.target_history, active)
                 if collect_mc and length == 0:
                     samples.append((priv[active].clone(), active.clone()))
                 if reference:
@@ -65,7 +75,7 @@ def evaluate(
                     k = min(trace_count, count)
                     trace.append(
                         (
-                            tick * env.dt,
+                            tick * env.decision_dt,
                             env.plant.pursuer.pos[:k].cpu().clone(),
                             env.plant.target.pos[:k].cpu().clone(),
                             action[:k].cpu().clone(),
@@ -73,6 +83,8 @@ def evaluate(
                         )
                     )
                 (obs, priv), reward, done, _, completed = env.step(action, raw)
+                if forecast is not None:
+                    forecast.advance(env.plant.target.pos, done)
                 total += discount * reward.double()
                 discount *= env.gamma
                 if collect_mc:
@@ -100,6 +112,8 @@ def evaluate(
                     break
             if not bool(env.finished.all()):
                 raise RuntimeError("Evaluation failed to terminate")
+            if forecast is not None:
+                forecast_reports.append(forecast.report())
             if collect_mc:
                 future = torch.zeros(count, device=env.device)
                 for (chunk, size), (state, mask) in zip(
@@ -137,12 +151,13 @@ def evaluate(
         return sum(r[key] for r in population) / len(population) if population else None
 
     report = dict(
-        schema="pursuit-direct-ctbr-evaluation-v3",
+        schema="pursuit-direct-ctbr-evaluation-v4",
         task=c["task"],
         seed=seed,
         num_envs=c["num_envs"],
         physics_hz=1000,
-        decision_hz=1000,
+        decision_hz=1 / decision_dt(c),
+        decision_steps=c["policy"]["decision_steps"],
         policy=(
             "geometric_reference"
             if reference
@@ -176,6 +191,35 @@ def evaluate(
         ).hexdigest(),
         episodes_detail=records,
     )
+    if forecast_reports:
+        horizons = c["prediction"]["horizons_s"]
+        counts = [
+            sum(r["samples_by_horizon"][k] for r in forecast_reports)
+            for k in range(len(horizons))
+        ]
+        errors = {}
+        for name in ("learned", "constant_velocity", "constant_acceleration"):
+            errors[name] = [
+                (
+                    math.sqrt(
+                        sum(
+                            (r["rmse_by_horizon_m"][name][k] or 0) ** 2
+                            * r["samples_by_horizon"][k]
+                            for r in forecast_reports
+                        )
+                        / counts[k]
+                    )
+                    if counts[k]
+                    else None
+                )
+                for k in range(len(horizons))
+            ]
+        report["forecast"] = dict(
+            mode=c["prediction"]["mode"],
+            horizons_s=horizons,
+            samples_by_horizon=counts,
+            rmse_by_horizon_m=errors,
+        )
     data = (torch.cat(states), torch.cat(targets)) if collect_mc else None
     return report, data
 

@@ -10,9 +10,21 @@
       16
     ]
   },
+  "prediction": {
+    "history_steps": 8,
+    "horizons_s": [
+      0.02,
+      0.04,
+      0.08
+    ],
+    "hidden_size": 8,
+    "epochs": 1,
+    "batch_size": 64,
+    "max_samples": 128
+  },
   "task": {
-    "duration": 0.12,
-    "tail_seconds": 0.06,
+    "duration": 0.4,
+    "tail_seconds": 0.2,
     "initial_tilt_deg": 0.0,
     "distance": [
       0.0,
@@ -21,18 +33,20 @@
     "initial_velocity_noise": 0.0
   },
   "training": {
-    "physics_steps": 256,
-    "rollout_steps": 64,
+    "physics_steps": 2560,
+    "rollout_steps": 32,
     "batch_size": 64,
     "epochs": 1,
-    "bc_samples": 16,
+    "bc_samples": 32,
     "bc_stride": 2,
-    "bc_updates": 4,
+    "bc_updates": 16,
     "dagger_rounds": 0,
-    "critic_updates": 2,
+    "critic_updates": 4,
     "mc_episodes": 2,
+    "mc_calibration_every_updates": 2,
+    "mc_calibration_updates": 4,
     "validation_episodes": 2,
-    "validation_every": 128,
+    "validation_every": 1280,
     "initialization_episodes": 2
   }
 }

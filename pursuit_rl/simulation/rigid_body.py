@@ -61,10 +61,14 @@ class BodyBatch:
         )
 
     @torch.no_grad()
-    def step(self, action):
+    def step(self, action, active=None):
         from pursuit_rl.ctbr.control import thrust_from_action
 
         u, p = self.pursuer, self.cfg
+        old = {
+            key: getattr(u, key)
+            for key in ("rate", "thrust", "rot", "acc", "vel", "pos")
+        }
         h = p["dt"]
         command = thrust_from_action(action[:, 0], p)
         rates = action[:, 1:] * self.rate_limits
@@ -77,3 +81,7 @@ class BodyBatch:
         u.acc = acceleration
         u.vel = u.vel + acceleration * h
         u.pos = u.pos + u.vel * h
+        if active is not None:
+            for key, previous in old.items():
+                mask = active.reshape((-1,) + (1,) * (previous.ndim - 1))
+                setattr(u, key, torch.where(mask, getattr(u, key), previous))

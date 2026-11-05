@@ -7,10 +7,18 @@ import math
 from pathlib import Path
 import torch
 from pursuit_rl.learning.ppo import AsymmetricPPO
-from .config import DEFAULT, merge, fingerprint, interface, validate
+from .config import (
+    DEFAULT,
+    merge,
+    fingerprint,
+    interface,
+    validate,
+    decision_dt,
+    observation_dims,
+)
 from .environment import PRIVILEGED_DIM
 
-SCHEMA = "pursuit-direct-ctbr-checkpoint-v2"
+SCHEMA = "pursuit-direct-ctbr-checkpoint-v3"
 
 
 def model_config(c):
@@ -22,7 +30,7 @@ def model_config(c):
         log_std_init=math.log(p["initial_std"]),
         log_std_min=math.log(p["min_std"]),
         log_std_max=math.log(p["max_std"]),
-        exploration_rho=math.exp(-c["physics"]["dt"] / p["exploration_time_s"]),
+        exploration_rho=math.exp(-decision_dt(c) / p["exploration_time_s"]),
         exploration_memory_start=32,
         actor_lr=t["actor_lr"],
         critic_lr=t["critic_lr"],
@@ -33,13 +41,19 @@ def model_config(c):
         ent_coef=0.0,
         max_grad_norm=0.5,
         critic_loss="huber",
-        critic_huber_delta=1.0,
+        critic_huber_delta=c["critic"]["huber_delta"],
+        value_clip=c["critic"]["value_clip"],
+        value_norm=c["critic"]["value_norm"],
+        norm_beta=c["critic"]["norm_beta"],
+        norm_min_variance=c["critic"]["norm_min_variance"],
+        prediction=copy.deepcopy(c["prediction"]),
+        base_obs_dim=observation_dims(c)[0],
         separate_critic_updates=True,
     )
 
 
 def new_model(c, optimizers=True):
-    dim = 32 + 4 * c["policy"]["history_steps"] + 2
+    _, dim = observation_dims(c)
     return AsymmetricPPO(
         dim,
         dim + PRIVILEGED_DIM,
@@ -77,6 +91,11 @@ def save(path, model, c, progress, origin):
         critic_optimizer=(
             model.critic_optimizer.state_dict() if model.critic_optimizer else None
         ),
+        predictor_optimizer=(
+            model.predictor_optimizer.state_dict()
+            if model.predictor_optimizer
+            else None
+        ),
         torch_rng=torch.get_rng_state(),
         cuda_rng=(
             torch.cuda.get_rng_state_all()
@@ -93,7 +112,7 @@ def load(path, device=None, optimizers=False):
     data = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise ValueError(
-            "Expected new direct-CTBR v2 checkpoint; old velocity/CTBR checkpoints are incompatible"
+            "Expected direct-CTBR v3 checkpoint; v690/v691 and velocity checkpoints are incompatible with the new clocks/observations"
         )
     c = copy.deepcopy(data["config"])
     if fingerprint(c) != data["fingerprint"] or interface(c) != data["interface"]:
@@ -108,6 +127,8 @@ def load(path, device=None, optimizers=False):
     if optimizers:
         model.actor_optimizer.load_state_dict(data["actor_optimizer"])
         model.critic_optimizer.load_state_dict(data["critic_optimizer"])
+        if model.predictor_optimizer is not None:
+            model.predictor_optimizer.load_state_dict(data["predictor_optimizer"])
     return model, c, data
 
 

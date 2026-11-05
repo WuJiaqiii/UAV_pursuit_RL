@@ -5,6 +5,8 @@ import torch
 from pursuit_rl.simulation.torch_device import resolve_torch_device
 from torch import nn
 import torch.nn.functional as F
+from .valuenorm import ValueNorm
+from .prediction import TrajectoryPredictor
 
 
 def mlp(input_dim, hidden, output_dim):
@@ -26,12 +28,32 @@ class AsymmetricPPO(nn.Module):
         self.action_dim = int(config.get("action_dim", 4))
         self.rho = float(config.get("exploration_rho", 0.0))
         self.memory_start = int(config.get("exploration_memory_start", 0))
+        self.obs_dim = obs_dim
+        self.base_obs_dim = config.get("base_obs_dim", obs_dim)
+        self.prediction_config = config.get("prediction", {"enabled": False})
+        self.predictor = (
+            TrajectoryPredictor(self.prediction_config)
+            if self.prediction_config["enabled"]
+            else None
+        )
+        feature_dim = self.base_obs_dim + (
+            3 * len(self.prediction_config["horizons_s"])
+            if self.predictor is not None
+            else 0
+        )
         if not (0 <= self.rho < 1):
             raise ValueError("exploration_rho must be in [0, 1)")
         if self.rho and self.memory_start + self.action_dim > obs_dim:
             raise ValueError("Exploration memory is missing from observations")
-        self.actor = mlp(obs_dim, config["hidden_actor"], self.action_dim)
-        self.critic = mlp(critic_dim, config["hidden_critic"], 1)
+        self.actor = mlp(feature_dim, config["hidden_actor"], self.action_dim)
+        self.critic = mlp(
+            feature_dim + critic_dim - obs_dim, config["hidden_critic"], 1
+        )
+        self.value_norm = ValueNorm(
+            config.get("value_norm", False),
+            config.get("norm_beta", 0.995),
+            config.get("norm_min_variance", 0.01),
+        )
         self.log_std = nn.Parameter(
             torch.full((self.action_dim,), config["log_std_init"])
         )
@@ -39,6 +61,7 @@ class AsymmetricPPO(nn.Module):
         self.to(self.device)
         self.actor_optimizer = None
         self.critic_optimizer = None
+        self.predictor_optimizer = None
         if create_optimizers:
             self.actor_optimizer = torch.optim.Adam(
                 list(self.actor.parameters()) + [self.log_std], lr=config["actor_lr"]
@@ -46,6 +69,57 @@ class AsymmetricPPO(nn.Module):
             self.critic_optimizer = torch.optim.Adam(
                 self.critic.parameters(), lr=config["critic_lr"]
             )
+            if self.predictor is not None and self.prediction_config["mode"] == "lstm":
+                self.predictor_optimizer = torch.optim.Adam(
+                    self.predictor.parameters(), lr=self.prediction_config["lr"]
+                )
+
+    @torch.no_grad()
+    def actor_features(self, obs):
+        if self.predictor is None:
+            return obs
+        history = obs[..., self.base_obs_dim :].reshape(
+            -1, self.prediction_config["history_steps"], 10
+        )
+        prediction = self.predictor(history).flatten(1)
+        return torch.cat((obs[..., : self.base_obs_dim], prediction), -1)
+
+    @torch.no_grad()
+    def critic_features(self, critic_obs):
+        if self.predictor is None:
+            return critic_obs
+        return torch.cat(
+            (
+                self.actor_features(critic_obs[..., : self.obs_dim]),
+                critic_obs[..., self.obs_dim :],
+            ),
+            -1,
+        )
+
+    def critic_values(self, critic_obs):
+        normalized = self.critic(self.critic_features(critic_obs)).squeeze(-1)
+        return self.value_norm.denormalize(normalized)
+
+    @torch.no_grad()
+    def update_value_statistics(self, returns):
+        """Rebase the output head when units change, preserving raw V predictions.
+
+        ValueNorm alone does not preserve outputs. This explicit PopArt-style
+        affine correction also keeps old-value clipping in consistent units.
+        Clear only the rebased head's Adam state; hidden-layer state is retained.
+        """
+        old_mean, old_std = self.value_norm.statistics()
+        self.value_norm.update(returns)
+        mean, std = self.value_norm.statistics()
+        if not self.value_norm.enabled:
+            return
+        head = self.critic[-1]
+        ratio = (old_std / std).to(head.weight)
+        head.weight.mul_(ratio)
+        head.bias.mul_(ratio).add_(((old_mean - mean) / std).to(head.bias))
+        if self.critic_optimizer is not None:
+            self.critic_optimizer.state.pop(head.weight, None)
+            self.critic_optimizer.state.pop(head.bias, None)
 
     @staticmethod
     def logprob(mean, std, raw):
@@ -54,7 +128,8 @@ class AsymmetricPPO(nn.Module):
         correction = 2 * (math.log(2) - raw - F.softplus(-2 * raw))
         return (normal.log_prob(raw) - correction).sum(dim=-1)
 
-    def distribution_parameters(self, obs):
+    def distribution_parameters(self, obs, prepared=False):
+        obs = obs if prepared else self.actor_features(obs)
         target_mean = self.actor(obs)
         if self.rho:
             previous = obs[..., self.memory_start : self.memory_start + self.action_dim]
@@ -75,7 +150,7 @@ class AsymmetricPPO(nn.Module):
             raw = mean if deterministic else mean + std * torch.randn_like(mean)
             actions = torch.tanh(raw)
             logprob = self.logprob(mean, std, raw)
-            values = self.critic(c).squeeze(-1)
+            values = self.critic_values(c)
         return (
             actions.cpu().numpy(),
             raw.cpu().numpy(),
@@ -109,7 +184,7 @@ class AsymmetricPPO(nn.Module):
             raw = mean if deterministic else mean + std * torch.randn_like(mean)
             action = torch.tanh(raw)
             lp = self.logprob(mean, std, raw)
-            values = self.critic(critic_obs).squeeze(-1)
+            values = self.critic_values(critic_obs)
             return action, raw, lp, values
 
     def predict_tensor(self, obs):
@@ -118,7 +193,7 @@ class AsymmetricPPO(nn.Module):
 
     def values_tensor(self, critic_obs):
         with torch.no_grad():
-            return self.critic(critic_obs).squeeze(-1)
+            return self.critic_values(critic_obs)
 
     def predict(self, obs):
         with torch.no_grad():
@@ -128,10 +203,9 @@ class AsymmetricPPO(nn.Module):
     def values(self, crit):
         with torch.no_grad():
             return (
-                self.critic(
+                self.critic_values(
                     torch.as_tensor(crit, dtype=torch.float32, device=self.device)
                 )
-                .squeeze(-1)
                 .cpu()
                 .numpy()
             )
@@ -193,6 +267,18 @@ class AsymmetricPPO(nn.Module):
         old_lp = torch.as_tensor(buffer.logprob.reshape(-1), device=device)
         adv = torch.as_tensor(buffer.advantage.reshape(-1), device=device)
         ret = torch.as_tensor(buffer.returns.reshape(-1), device=device)
+        # GAE and stored values are always in reward units. Freeze target
+        # statistics for every minibatch/epoch of this PPO update.
+        self.update_value_statistics(ret)
+        normalized_ret = self.value_norm.normalize(ret)
+        old_values = self.value_norm.normalize(
+            torch.as_tensor(buffer.values.reshape(-1), device=device)
+        )
+        if self.predictor is not None:
+            o = torch.cat(
+                [self.actor_features(part) for part in o.split(c["batch_size"])]
+            )
+            pr = torch.cat((o, pr[:, self.obs_dim :]), 1)
         logprob_error = 0.0
         if diagnose:
             with torch.no_grad():
@@ -200,7 +286,9 @@ class AsymmetricPPO(nn.Module):
                 residuals = []
                 for start in range(0, len(old_lp), c["batch_size"]):
                     end = start + c["batch_size"]
-                    mean, std = self.distribution_parameters(o[start:end])
+                    mean, std = self.distribution_parameters(
+                        o[start:end], prepared=True
+                    )
                     lp = self.logprob(mean, std, raw[start:end])
                     errors.append((lp - old_lp[start:end]).abs().max())
                     residuals.append(raw[start:end] - mean)
@@ -241,7 +329,7 @@ class AsymmetricPPO(nn.Module):
                     epoch=epoch,
                     completed_minibatches=stats["updates"],
                 )
-                mean, std = self.distribution_parameters(o[ids])
+                mean, std = self.distribution_parameters(o[ids], prepared=True)
                 new_lp = self.logprob(mean, std, raw[ids])
                 log_ratio = new_lp - old_lp[ids]
                 ratio = log_ratio.exp()
@@ -294,13 +382,25 @@ class AsymmetricPPO(nn.Module):
                         c.get("log_std_min", -4.0), c.get("log_std_max", 1.0)
                     )
                 values = self.critic(pr[ids]).squeeze(-1)
-                vf_loss = (
-                    F.huber_loss(
-                        values, ret[ids], delta=c.get("critic_huber_delta", 1.0)
+
+                def value_error(prediction):
+                    if c.get("critic_loss", "mse") == "huber":
+                        return F.huber_loss(
+                            prediction,
+                            normalized_ret[ids],
+                            delta=c.get("critic_huber_delta", 1.0),
+                            reduction="none",
+                        )
+                    return 0.5 * (prediction - normalized_ret[ids]).square()
+
+                losses = value_error(values)
+                clip = c.get("value_clip", 0.0)
+                if clip > 0:
+                    clipped = old_values[ids] + (values - old_values[ids]).clamp(
+                        -clip, clip
                     )
-                    if c.get("critic_loss", "mse") == "huber"
-                    else 0.5 * ((values - ret[ids]) ** 2).mean()
-                )
+                    losses = torch.maximum(losses, value_error(clipped))
+                vf_loss = losses.mean()
                 if guard and not bool(torch.isfinite(vf_loss).item()):
                     raise FloatingPointError("Nonfinite critic loss")
                 self.critic_optimizer.zero_grad(set_to_none=True)
@@ -345,13 +445,21 @@ class AsymmetricPPO(nn.Module):
             stats[k] /= max(stats["updates"], 1)
         stats["early_stop"] = bool(stop)
         with torch.no_grad():
-            pred = self.critic(pr).squeeze(-1)
+            pred = self.value_norm.denormalize(self.critic(pr).squeeze(-1))
             target_var = ret.var(unbiased=False)
             explained = 1 - (ret - pred).var(unbiased=False) / target_var.clamp_min(
                 1e-8
             )
         stats["explained_variance"] = float(explained.item())
         stats["action_std"] = float(self.log_std.detach().exp().mean().item())
+        value_mean, value_std = self.value_norm.statistics()
+        stats.update(
+            value_target_mean=float(value_mean),
+            value_target_std=float(value_std),
+            critic_loss_units=(
+                "normalized_returns" if self.value_norm.enabled else "reward"
+            ),
+        )
         if diagnose:
             diagnostics = {
                 "schema": "ppo-numerics-v1",

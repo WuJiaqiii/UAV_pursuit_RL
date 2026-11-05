@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_ROOT="${1:-runs/ctbr_v691}"
+OUT_ROOT="${1:-runs/ctbr_v700}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 DEVICE="${DEVICE:-cuda}"
 read -r -a SEED_LIST <<< "${SEEDS:-42 43 44}"
@@ -13,15 +13,14 @@ for seed in "${SEED_LIST[@]}"; do
         --physics-steps "${PHYSICS_STEPS:-20000000}" \
         --episodes "${GATE_EPISODES:-64}" --minimum-success "${MIN_SUCCESS:-0.9}"; then
         test_seed=$((110000 + seed))
-        for model in initial best latest; do
-            checkpoint="$seed_root/10_random_high/seed_$seed/checkpoints/$model.pt"
-            "$PYTHON_BIN" main.py evaluate --checkpoint "$checkpoint" \
+        checkpoint="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["phases"][-1]["selected_checkpoint"])' "$seed_root/curriculum_summary.json")"
+        profile="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["phases"][-1]["profile"])' "$seed_root/curriculum_summary.json")"
+        "$PYTHON_BIN" main.py evaluate --checkpoint "$checkpoint" --config "$profile" \
                 --device "$DEVICE" --seed "$test_seed" --episodes "${TEST_EPISODES:-256}" \
-                --out "$seed_root/test_${model}_deterministic.json"
-            "$PYTHON_BIN" main.py evaluate --checkpoint "$checkpoint" --stochastic \
+                --out "$seed_root/test_selected_deterministic.json"
+        "$PYTHON_BIN" main.py evaluate --checkpoint "$checkpoint" --config "$profile" --stochastic \
                 --device "$DEVICE" --seed "$test_seed" --episodes "${TEST_EPISODES:-256}" \
-                --out "$seed_root/test_${model}_stochastic.json"
-        done
+                --out "$seed_root/test_selected_stochastic.json"
     else
         printf 'Seed %s stopped; check the experiment gate and logs; inspect %s\n' "$seed" "$seed_root" >&2
         failures=$((failures + 1))

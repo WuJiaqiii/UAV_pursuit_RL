@@ -143,7 +143,9 @@ class _DiagnosticBuffer:
     def temporal_summary(self, values):
         """Correlations within episodes, with lags expressed in physical time."""
         tensor = isinstance(values, torch.Tensor)
-        dt = self.physics["dt"] if self.physics else None
+        dt = getattr(self, "decision_dt", None) or (
+            self.physics["dt"] if self.physics else None
+        )
         lags = {1}
         if dt:
             lags.update((max(1, round(0.05 / dt)), max(1, round(0.13 / dt))))
@@ -251,7 +253,7 @@ class _DiagnosticBuffer:
                 ("speed", 2),
                 ("outside", 3),
                 ("tilt", 4),
-                ("timeout", 5),
+                ("tracking_failed", 5),
                 ("invalid_target", 6),
             ):
                 mask = self.event_code == code
@@ -274,7 +276,10 @@ class _DiagnosticBuffer:
             result["actions"]["actuator_autocorrelation"] = self.temporal_summary(
                 self.actuator_state
             )
-            if self.physics and getattr(self, "action_semantics", "ctbr") == "ctbr-v2":
+            if self.physics and getattr(self, "action_semantics", "ctbr") in (
+                "ctbr-v2",
+                "ctbr-held-v3",
+            ):
                 from pursuit_rl.ctbr.control import thrust_from_action
 
                 action_tensor = action if tensor else torch.from_numpy(action)
@@ -283,6 +288,8 @@ class _DiagnosticBuffer:
                 )
         result["gamma"] = self.gamma
         result["gae_lambda"] = self.gae_lambda
+        result["physics_dt"] = self.physics["dt"] if self.physics else None
+        result["decision_dt"] = getattr(self, "decision_dt", None)
         return result
 
     def diagnostic_snapshot(self, include_teacher=False):
@@ -323,13 +330,14 @@ class _DiagnosticBuffer:
             "gamma": self.gamma,
             "gae_lambda": self.gae_lambda,
             "physics": self.physics,
+            "decision_dt": getattr(self, "decision_dt", None),
             "event_codes": {
                 "ongoing": 0,
                 "success": 1,
                 "speed": 2,
                 "outside": 3,
                 "tilt": 4,
-                "timeout": 5,
+                "tracking_failed": 5,
                 "invalid_target": 6,
             },
         }

@@ -1,4 +1,4 @@
-"""Sustained flight and pursuit MDP, fresh CTBR every millisecond.
+"""Sustained pursuit with held CTBR decisions and 1 ms physical integration.
 
 Only physical failure or the finite deadline ends an episode. Acquisition is a
 recorded event, never an early terminal. No target boundary-repulsion force.
@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from pursuit_rl.simulation.rigid_body import BodyBatch, exp_so3, norm
 from pursuit_rl.simulation.torch_device import resolve_torch_device
-from .config import KINDS, validate
+from .config import KINDS, validate, decision_dt, observation_dims
 from .control import limit
 
 PRIVILEGED_DIM = 44
@@ -27,17 +27,27 @@ class CTBRBatch:
         )
         self.plant = BodyBatch(config["physics"], self.n, self.device)
         self.dt = config["physics"]["dt"]
+        self.decision_steps = config["policy"]["decision_steps"]
+        self.decision_dt = decision_dt(config)
         tr = config["training"]
         task = config["task"]
-        self.gamma = math.exp(-self.dt / tr["discount_time_s"])
-        self.gae_lambda = math.exp(-self.dt / tr["advantage_time_s"]) / self.gamma
-        self.actor_dim = 32 + 4 * config["policy"]["history_steps"] + 2
+        self.physics_gamma = math.exp(-self.dt / tr["discount_time_s"])
+        self.gamma = math.exp(-self.decision_dt / tr["discount_time_s"])
+        self.gae_lambda = (
+            math.exp(-self.decision_dt / tr["advantage_time_s"]) / self.gamma
+        )
+        self.base_actor_dim, self.actor_dim = observation_dims(config)
         self.critic_dim = self.actor_dim + PRIVILEGED_DIM
         self.max_steps = round(task["duration"] / self.dt)
+        self.max_decision_steps = math.ceil(self.max_steps / self.decision_steps)
         self.tail_steps = round(task["tail_seconds"] / self.dt)
         self.raw_history = torch.zeros(
             self.n, config["policy"]["history_steps"], 4, device=self.device
         )
+        self.target_history = torch.zeros(
+            self.n, config["prediction"]["history_steps"], 10, device=self.device
+        )
+        self.last_physics_steps = 0
         self.finished = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.steps = torch.zeros(self.n, dtype=torch.long, device=self.device)
         self.center = torch.zeros(self.n, 3, device=self.device)
@@ -187,7 +197,25 @@ class CTBRBatch:
         self.initial_rel_pos[mask] = (t.pos - u.pos)[mask].float()
         self.initial_target_vel[mask] = t.vel[mask].float()
         self.minimum_distance[mask] = norm(t.pos - u.pos)[mask].float()
+        self.target_history[mask] = 0
+        self.append_target_history(mask)
         return self.observe()
+
+    def append_target_history(self, mask):
+        t = self.plant.target
+        row = torch.cat(
+            (
+                t.pos.float(),
+                t.vel.float(),
+                t.acc.float(),
+                torch.ones(self.n, 1, device=self.device),
+            ),
+            1,
+        )
+        updated = torch.cat((self.target_history[:, 1:], row[:, None]), 1)
+        self.target_history = torch.where(
+            mask[:, None, None], updated, self.target_history
+        )
 
     def circle_state(self):
         r = self.circle_radius
@@ -210,7 +238,9 @@ class CTBRBatch:
         )
         return self.center + offset, velocity, accel
 
-    def advance_target(self):
+    def advance_target(self, active=None):
+        if active is None:
+            active = ~self.finished
         c = self.config["task"]
         t = self.plant.target
         n = self.n
@@ -218,22 +248,30 @@ class CTBRBatch:
         if c["kind"] in ("hover", "goto"):
             return
         if c["kind"] == "circle":
-            self.phase += dt * self.speed_setting / self.circle_radius
-            t.pos, t.vel, t.acc = [x.double() for x in self.circle_state()]
+            self.phase += active.float() * dt * self.speed_setting / self.circle_radius
+            t.pos, t.vel, t.acc = [
+                torch.where(active[:, None], x.double(), old)
+                for x, old in zip(self.circle_state(), (t.pos, t.vel, t.acc))
+            ]
             return
         if c["kind"] == "cruise":
-            t.pos = t.pos + t.vel * dt
+            t.pos = t.pos + active[:, None] * t.vel * dt
             return
-        self.timer -= dt
-        changed = self.timer <= 0
+        self.timer -= dt * active.float()
+        changed = (self.timer <= 0) & active
         self.timer = torch.where(
             changed, self.uniform(*c["switch_interval"], n), self.timer
         )
         if c["kind"] == "maneuver":
             # Keep the chosen Singer/turn/switchback family for this episode.
+            choices = torch.tensor(c["motion_patterns"], device=self.device)
             self.pattern = torch.where(
-                self.steps == 0,
-                1 + torch.randint(3, (n,), device=self.device, generator=self.gen),
+                (self.steps == 0) & active,
+                choices[
+                    torch.randint(
+                        len(choices), (n,), device=self.device, generator=self.gen
+                    )
+                ],
                 self.pattern,
             )
         else:
@@ -244,11 +282,12 @@ class CTBRBatch:
         fresh = limit(fresh, 1.0) * c["max_accel"]
         self.desired_acc = torch.where(changed[:, None], fresh, self.desired_acc)
         decay = math.exp(-dt / c["ou_time"])
-        self.ou = (
+        new_ou = (
             decay * self.ou
             + math.sqrt(1 - decay * decay) * self.randn(n, 3) * c["max_accel"]
         )
-        self.ou[:, 2] *= 0.995
+        new_ou[:, 2] *= 0.995
+        self.ou = torch.where(active[:, None], new_ou, self.ou)
         speed = norm(t.vel).clamp_min(0.1)
         lateral = torch.stack((-t.vel[:, 1], t.vel[:, 0], torch.zeros_like(speed)), 1)
         lateral = lateral / norm(lateral, True).clamp_min(1e-8) * c["max_accel"]
@@ -271,14 +310,16 @@ class CTBRBatch:
         # average of reference derivatives, and ||jerk|| <= 2*A/tau <= J.
         reference = limit(self.command_velocity + command * dt, c["speed"][1])
         reference[:, 2] = reference[:, 2].clamp(-0.75, 0.75)
-        tau = max(2 * c["max_accel"] / c["jerk_limit"], dt)
+        tau = c["response_time_s"]
         decay = math.exp(-dt / tau)
         velocity = decay * t.vel + (1 - decay) * reference
         acceleration = (velocity - t.vel) / dt
-        self.command_velocity = reference
-        t.vel = velocity
-        t.pos = t.pos + velocity * dt
-        t.acc = acceleration
+        self.command_velocity = torch.where(
+            active[:, None], reference, self.command_velocity
+        )
+        t.vel = torch.where(active[:, None], velocity, t.vel)
+        t.pos = t.pos + active[:, None] * t.vel * dt
+        t.acc = torch.where(active[:, None], acceleration, t.acc)
 
     def observe(self):
         u, t = self.plant.pursuer, self.plant.target
@@ -327,7 +368,7 @@ class CTBRBatch:
                 torch.full_like(remaining, c["ou_time"]),
                 torch.full_like(remaining, c["duration"] / 60.0),
                 torch.full_like(remaining, c["tail_seconds"] / 60.0),
-                torch.full_like(remaining, 2 * c["max_accel"] / c["jerk_limit"]),
+                torch.full_like(remaining, c["response_time_s"]),
             ),
             1,
         )
@@ -366,14 +407,13 @@ class CTBRBatch:
             ),
             1,
         ).float()
+        if self.config["prediction"]["enabled"]:
+            obs = torch.cat((obs, self.target_history.flatten(1)), 1)
         critic = torch.cat((obs, priv), 1)
         assert obs.shape == (self.n, self.actor_dim) and critic.shape == (
             self.n,
             self.critic_dim,
         )
-        if self.final_obs is not None:
-            obs = torch.where(self.finished[:, None], self.final_obs, obs)
-            critic = torch.where(self.finished[:, None], self.final_priv, critic)
         return obs, critic
 
     @torch.no_grad()
@@ -392,18 +432,47 @@ class CTBRBatch:
             or not torch.allclose(raw.tanh(), action, atol=1e-6, rtol=1e-5)
         ):
             raise ValueError("Raw action and executed action disagree")
+        started = ~self.finished
+        old_action = self.raw_history[:, 0].tanh()
+        updated = torch.cat((raw[:, None], self.raw_history[:, :-1]), 1)
+        self.raw_history = torch.where(
+            started[:, None, None], updated, self.raw_history
+        )
+        derivative_cost = (action - old_action).square().sum(1) / self.decision_dt
+        reward = torch.zeros(self.n, device=self.device)
+        terminated = torch.zeros_like(self.finished)
+        components = {}
+        records = []
+        counts = torch.zeros(self.n, dtype=torch.long, device=self.device)
+        for tick in range(self.decision_steps):
+            counts += (~self.finished).long()
+            step_reward, done, completed = self._physics_step(
+                action,
+                derivative_cost if tick == 0 else torch.zeros_like(derivative_cost),
+            )
+            discount = self.physics_gamma**tick
+            reward += discount * step_reward
+            for key, value in self.reward_components.items():
+                components[key] = components.get(key, 0.0) + discount * value
+            terminated |= done
+            records.extend(completed)
+        self.last_physics_steps = int(counts.sum())
+        self.last_physics_steps_per_env = counts
+        self.reward_components = components
+        self.append_target_history(started)
+        obs, priv = self.observe()
+        self.final_obs, self.final_priv = obs, priv
+        return (obs, priv), reward, terminated, torch.zeros_like(terminated), records
+
+    def _physics_step(self, action, derivative_cost):
         active = ~self.finished
-        if self.final_obs is None:
-            self.final_obs, self.final_priv = self.observe()
         p, c, r = self.config["physics"], self.config["task"], self.config["reward"]
         u, t = self.plant.pursuer, self.plant.target
         previous = norm(t.pos - u.pos).float()
         old_acc = t.acc.clone()
-        old_action = self.raw_history[:, 0].tanh()
-        self.raw_history = torch.cat((raw[:, None], self.raw_history[:, :-1]), 1)
-        self.plant.step(action)
-        self.advance_target()
-        self.steps += 1
+        self.plant.step(action, active)
+        self.advance_target(active)
+        self.steps += active.long()
         distance = norm(t.pos - u.pos).float()
         v_error = norm(t.vel - u.vel).float()
         tilt = torch.acos(u.rot[:, 2, 2].clamp(-1, 1))
@@ -433,7 +502,11 @@ class CTBRBatch:
             acquired, self.steps.float() * self.dt, self.first_acquisition
         )
         self.current_dwell = torch.where(
-            within & active, self.current_dwell + self.dt, torch.zeros_like(distance)
+            active,
+            torch.where(
+                within, self.current_dwell + self.dt, torch.zeros_like(distance)
+            ),
+            self.current_dwell,
         )
         self.longest_dwell = torch.maximum(self.longest_dwell, self.current_dwell)
         self.minimum_distance = torch.where(
@@ -487,9 +560,7 @@ class CTBRBatch:
             * r["rate"]
             * (u.rate / self.plant.rate_limits).square().sum(1),
             progress=r["progress"] * (previous - distance),
-            action_derivative=-r["action_derivative"]
-            * (action - old_action).square().sum(1)
-            / self.dt,
+            action_derivative=-r["action_derivative"] * derivative_cost,
             acquisition=r["acquisition_bonus"] * acquired.float(),
             completion=r["completion_bonus"] * success.float(),
             failure=-r["failure"] * (failure | invalid).float(),
@@ -501,9 +572,6 @@ class CTBRBatch:
         reward = sum(components.values())
         reward = torch.where(active, reward, 0.0)
         self.episode_return += reward
-        obs, priv = self.observe()
-        self.final_obs = torch.where(done[:, None], obs, self.final_obs)
-        self.final_priv = torch.where(done[:, None], priv, self.final_priv)
         self.finished |= done
         records = []
         if bool(done.any()):
@@ -557,6 +625,7 @@ class CTBRBatch:
                 records.append(
                     dict(
                         slot=slot,
+                        task=c["name"],
                         success=bool(v[0]),
                         reason=reason,
                         time=v[4],
@@ -578,5 +647,4 @@ class CTBRBatch:
                         tail_complete=int(v[18]) >= self.tail_steps,
                     )
                 )
-        obs, priv = self.observe()
-        return (obs, priv), reward * r["scale"], done, torch.zeros_like(done), records
+        return reward * r["scale"], done, records

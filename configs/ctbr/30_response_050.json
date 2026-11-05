@@ -1,31 +1,37 @@
 {
   "task": {
-    "name": "09_random_switch",
     "kind": "random",
     "distance": [
       10,
       70
     ],
     "speed": [
-      3,
+      2,
       8
     ],
-    "max_accel": 3,
-    "duration": 50,
+    "max_accel": 3.0,
+    "duration": 45,
     "radius": 2.0,
     "velocity_tolerance": 2.0,
+    "tail_seconds": 10,
+    "minimum_tail_fraction": 0.9,
     "initial_tilt_deg": 10,
     "initial_velocity_noise": 0.3,
     "randomization": 1.0,
     "match_initial_velocity": false,
-    "tail_seconds": 10,
-    "minimum_tail_fraction": 0.9,
     "switch_interval": [
-      0.5,
-      1.5
+      0.3,
+      0.9
     ],
-    "ou_time": 0.4,
-    "jerk_limit": 20.0
+    "ou_time": 0.25,
+    "jerk_limit": 20.0,
+    "response_time_s": 0.5,
+    "motion_patterns": [
+      1,
+      2,
+      3
+    ],
+    "name": "30_response_050"
   },
   "training": {
     "physics_steps": 20000000,
