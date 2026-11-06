@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path
 
-SCHEMA = "pursuit-ctbr-v3"
+SCHEMA = "pursuit-ctbr-v4"
 DEFAULT = {
     "schema": SCHEMA,
     "seed": 42,
@@ -33,6 +33,7 @@ DEFAULT = {
     },
     "policy": {
         "decision_steps": 10,
+        "position_error_cap_m": 5.0,
         "hidden_actor": [128, 128],
         "hidden_critic": [128, 128],
         "history_steps": 8,
@@ -89,6 +90,8 @@ DEFAULT = {
         "initialization_success_floor": 0.9,
         "save_every_updates": 1,
         "transfer_dagger_updates": 0,
+        "prediction_updates_enabled": True,
+        "minimum_success": 0.95,
     },
     "reward": {
         "scale": 0.1,
@@ -121,6 +124,7 @@ DEFAULT = {
         "velocity_tolerance": 1.0,
         "tail_seconds": 8.0,
         "minimum_tail_fraction": 0.9,
+        "maximum_tail_rmse": 0.5,
         "initial_tilt_deg": 5.0,
         "initial_velocity_noise": 0.1,
         "match_initial_velocity": False,
@@ -172,6 +176,13 @@ def validate(c):
         raise ValueError("Physics must use 1 ms integration steps")
     if type(policy["decision_steps"]) is not int or policy["decision_steps"] < 1:
         raise ValueError("policy.decision_steps must be a positive integer")
+    if (
+        type(policy["position_error_cap_m"]) not in (int, float)
+        or policy["position_error_cap_m"] < 0
+    ):
+        raise ValueError(
+            "policy.position_error_cap_m must be nonnegative; zero disables it"
+        )
     control_dt = decision_dt(c)
     pred, critic = c["prediction"], c["critic"]
     if type(pred["enabled"]) is not bool or pred["mode"] not in (
@@ -268,6 +279,11 @@ def validate(c):
     ):
         raise ValueError("Invalid initialization segment or success floor")
     if (
+        type(tr["prediction_updates_enabled"]) is not bool
+        or not 0 <= tr["minimum_success"] <= 1
+    ):
+        raise ValueError("Invalid predictor update switch or success threshold")
+    if (
         abs(
             round(tr["bc_segment_seconds"] / control_dt) * control_dt
             - tr["bc_segment_seconds"]
@@ -306,6 +322,7 @@ def validate(c):
         not 0 < t["tail_seconds"] <= t["duration"]
         or t["radius"] <= 0
         or t["velocity_tolerance"] <= 0
+        or t["maximum_tail_rmse"] <= 0
     ):
         raise ValueError("Invalid task acceptance window")
     for key in ("duration", "tail_seconds"):
@@ -376,9 +393,13 @@ def observation_dims(c):
 
 def interface(c):
     return {
-        "schema": SCHEMA,
+        "schema": c["schema"],
         "action": "ctbr-piecewise-hover-thrust-v2",
-        "observation": "ned-actuator-history-causal-target-window-v3",
+        "observation": (
+            "ned-actuator-history-causal-target-window-v3"
+            if c["schema"] == "pursuit-ctbr-v3"
+            else "ned-actuator-history-causal-target-window-v4"
+        ),
         "physics": c["physics"],
         "policy": {
             k: v for k, v in c["policy"].items() if k not in ("initial_std", "min_std")

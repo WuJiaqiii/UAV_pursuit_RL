@@ -1,0 +1,39 @@
+{
+  "task": {
+    "name": "01_hover_small",
+    "kind": "hover",
+    "distance": [
+      0,
+      0.3
+    ],
+    "speed": [
+      0,
+      0
+    ],
+    "max_accel": 0,
+    "duration": 20,
+    "radius": 0.75,
+    "velocity_tolerance": 1.0,
+    "initial_tilt_deg": 5,
+    "initial_velocity_noise": 0.1,
+    "randomization": 0,
+    "match_initial_velocity": false,
+    "tail_seconds": 10,
+    "minimum_tail_fraction": 0.9,
+    "switch_interval": [
+      1.5,
+      3.0
+    ],
+    "ou_time": 0.6,
+    "jerk_limit": 10.0,
+    "response_time_s": 0.4,
+    "maximum_tail_rmse": 0.1
+  },
+  "training": {
+    "physics_steps": 4000000,
+    "bc_updates": 0,
+    "dagger_rounds": 0,
+    "transfer_dagger_updates": 0,
+    "prediction_updates_enabled": false
+  }
+}

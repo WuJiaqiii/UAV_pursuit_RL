@@ -1,68 +1,59 @@
-# v7.0 架构
+# v7.0.1 架构与契约
 
-## 数据路线
+## 决策和动力学
 
-main.py → ctbr/curriculum.py 或 ctbr/training.py → CTBRBatch / TaskMixtureBatch → AsymmetricPPO。
+main.py 为统一入口。CTBR 指令每 10 ms 更新一次，期间刚体、推力/角速度一阶响应、目标、安全边界及任务指标每 1 ms 积分。动作保持、子步折扣奖励、GAE 秒尺度、实际物理步和决策步分开统计。
 
-- simulation/rigid_body.py：NED 刚体运动与 SO(3) 积分，一阶推力和角速度响应。
-- ctbr/environment.py：目标生成、观测、安全判定、奖励、持续追踪指标，以及决策到物理子步的展开。
-- learning/prediction.py：因果历史编码、监督标签窗口、独立预测器训练和冻结评估指标。
-- learning/ppo.py、buffers.py：条件动作概率、PPO、以奖励单位计算 GAE，以及数值诊断。
-- learning/valuenorm.py、ctbr/value_learning.py：价值归一化、输出头重标定和完整 MC 回报纠偏。
-- ctbr/mixture.py：当前任务和已掌握任务的新鲜在策略数据采集。
-- ctbr/checkpoint.py：模型、预测器、归一化统计、优化器、随机状态和训练来源。
+当前动力学仍是角速度/推力响应近似，不是显式旋翼、电机或力矩 PID 模型。映射、响应常数、奖励、折扣和网络规模在首轮 A/B/C 中一致。
 
-## 控制与时钟
+## Actor 有界输入，critic 保留真实距离
 
-physics.dt=0.001，policy.decision_steps=10，决策周期为 0.01 秒。CTBR 是期望推力及机体系角速度，每次决策保持到下一次。当前模型使用一阶闭环响应近似执行器，默认推力/角速度时间常数为 0.1/0.13 秒；没有显式旋翼、ESC 或惯量/力矩 PID 模型。
+policy.position_error_cap_m=5.0。仅在 Actor 的分布计算之前，把位置误差向量幅值限制在 5 m；方向保留。数值为零表示禁用。
 
-每个物理子步都检查终止条件。中途终止的环境立即冻结，剩余子步不再推进其状态、奖励或计数。获得目标半径仅记为一次事件；成功必须安全持续到完整截止时间，满足完整末段窗口的距离占比和相对速度条件。
+原始观测及 rollout 保存真实误差。critic_features 保留真实误差，不使用 Actor 的限幅副本。采样、确定性动作、PPO 概率重算以及教师拟合均采用一致的 Actor 编码。该处理不会改变 CTBR 的物理含义。
 
-决策奖励是各物理子步奖励的折扣和，决策 gamma=exp(-decision_dt/discount_time_s)，gamma×lambda=exp(-decision_dt/advantage_time_s)。动作变化惩罚按决策间隔计算一次；动作历史每次决策写入一次。训练预算统计实际活跃物理子步，decision_transitions 单独计数。最后一个批次可能使预算超过目标少量子步。
+默认原始存储维度仍为 466/510，MLP 输入为 Actor 75、critic 119。网络仍使用当前 66 维状态、8 个动作历史，以及 40 帧目标历史生成的 3 个未来位移点。LSTM 为 64 维单层残差预测器；未来真值只用于监督标签。
 
-## 因果历史与预测
+training.prediction_updates_enabled=false 时保留预测输出和权重，停止监督更新。首轮三组均冻结预测器，排除特征漂移。完整课程仍可显式启用预测训练。
 
-默认当前观测为 66 维，保留索引 32 开始的 8 个 raw-action 历史。额外保存 40×10 维目标历史：已观测位置、速度、加速度和有效标记。默认原始存储维度 Actor=466、critic=510。
+## 权重迁移
 
-网络不直接使用绝对目标历史坐标。预测器先将历史位置重基准到最新目标位置，缩放运动状态，用单层 64 维 LSTM 预测未来目标位移。恒加速度预测作为基线，输出层零初始化，网络学习残差。3 个预测点共 9 维拼接到当前观测；因此实际 Actor MLP 输入 75 维，critic MLP 输入 119 维。critic 另外保留已有 44 维特权状态，Actor 不接收这些内部状态。
+配置/检查点升级为 v4。v700/v3 的加载分为：
 
-历史在 reset 时单独清空，缺失帧使用有效标记。未来标签只在 rollout 结束后生成；任何跨终止、跨重置或未完整观察的预测窗口均丢弃。训练顺序是：
+- 只读推理：恢复原策略，Actor 限幅为零；不静默使用 v701 默认值。
+- 显式迁移：允许改变 Actor 位置编码、初始探索、任务和训练设置；核对动力学、奖励、观测结构、决策周期及网络架构一致。
 
-1. 固定预测器，采集当前策略数据。
-2. 用同一个预测器重算概率，完成 PPO。
-3. 用刚才轨迹的已实现未来位置单独训练预测器。
-4. 下一轮用新预测器重新采样。
+迁移保留 Actor、critic、预测器及 ValueNorm 权重，重建三个优化器，不延续旧 RNG 或局部训练计数。来源 SHA256、原契约、原训练记录、实际新标准差均写入迁移回执。
 
-每次监督拟合留出 20% 窗口作为更新保护集，若候选预测误差退化则恢复权重和优化器。该集合来自同一 rollout，可能包含相关窗口，只用于防止明显的坏更新；泛化能力仍由独立种子的冻结轨迹评估。
+初始探索标准差显式写入 log_std，不会被父检查点覆盖。A/B 为 0.07，C 为 0.03。A 冻结迁移后的全部模型参数；B/C 重新采集当前随机策略的完整 MC 回报，预热 critic 后再开始 PPO。
 
-预测器不接受 PPO 反向传播。检查点包含预测器权重与优化器。可通过 prediction.mode 对照 constant_velocity、constant_acceleration、lstm；或将 enabled 设为 false。
-
-思路参考 [OPEN](https://arxiv.org/abs/2409.15866)。本实现为单追踪器重新实现，没有复制其多智能体 MAPPO 和注意力架构。
+迁移后的 critic 标记为需要校准。A 及 C_initial 的 critic_matches_policy=false，其价值误差不作为新策略已校准的证据。
 
 ## 价值学习
 
-critic 内部输出归一化价值；sample、values_tensor、GAE、诊断和 MC 全部使用还原后的奖励单位。奖励仍采用原有物理时间积分和固定 reward.scale，不因加入 ValueNorm 而改变任务奖励。
+保留 debiased ValueNorm、Huber loss、同口径价值裁剪和 PopArt 式输出头重标定。外部 values API、GAE 和 MC 使用原缩放奖励单位；统计在单次 PPO 更新内固定。
 
-ValueNorm 用 beta=0.995 的指数滑动均值和二阶矩，进行初期偏置校正；方差下限 0.01。更新统计后对最后一层进行仿射重标定，保持原奖励单位下输出不变，仅存在浮点舍入误差。这是额外的 PopArt 式输出保真处理；被重标定输出头的 Adam 状态会清空，隐藏层状态保留。
+持续 MC 默认每 16 次 PPO 更新及预算结束时触发。Actor/预测器冻结，使用新鲜完整随机回报拟合 critic；同一组独立校准验证状态/回报用于前后比较。退化时恢复 critic、归一化统计与优化器。该方法不等于已经消除所有困难初态偏差。
 
-PPO 每轮只更新一次统计，在全部 minibatch/epoch 中固定。旧价值先按同一套新统计归一化，再进行 value clipping；损失为归一化目标上的 Huber loss。优势仍单独标准化。
+## 评分与可行性分开
 
-持续 MC 默认每 16 次 PPO 更新和预算结束时触发：
+selection.py 检查当前任务成功率和 maximum_tail_rmse；curriculum.py 进一步检查两组验证种子及保留任务预算。
 
-- 当前 Actor、探索分布和预测器冻结，采集完整随机策略回合。
-- 用完整回报拟合 critic，额外采样少见的回合初始状态。
-- 另一组种子提前生成校准验证状态和回报。拟合前后使用完全相同的数据比较。
-- 全状态与初始状态误差均在容许退化预算内才接受；否则恢复 critic、归一化统计及其优化器。
-- Actor、预测器不参与这次纠偏；跨策略的旧 MC 数据不会混用。
+- best_current.pt：按任务评分排序，初始化也是候选。
+- best_feasible.pt：仅保存满足当前精度和全部外部验证条件的候选。
+- best.pt：best_current.pt 的兼容别名。
+- initial.pt/latest.pt：初始化与最新更新快照。
 
-参考 [SimpleFlight 的 ValueNorm](https://github.com/thu-uav/SimpleFlight/blob/f5ae8fc3689edc7c982e07cbfd587eeeab72f279/omni_drones/learning/utils/valuenorm.py)。SimpleFlight 使用 GAE 加 ValueNorm；持续 MC 纠偏与输出头保真是本版额外设计。
+晋级取 best_feasible；预算耗尽而没有可行候选时，best_current 只能用于诊断，不能冒充已通过课程。已合格初始化可直接晋级并记录零次 PPO 更新。
 
-## 课程与保留
+周期晋级和能力筛查采用失败提前返回；最终完整审计保留全部报告。当前任务未通过时，不必重复计算全部旧技能。
 
-34 个 profile 的参数显式保存在 configs/ctbr；计划记录每次改变的难度轴。第 04 级起采用 2 m 半径、10 秒末段窗口和至少 90% 半径内占比；第 04–33 级时长 45 秒，最后一级为 60 秒。每个验证种子单独达到最低成功率才通过。
+## A/B/C 实验组织
 
-机动任务分布依次引入 switchback、turn、Singer，然后独立改变初速匹配、距离与速度，最后增加随机模式、切换速度、加速度及远距范围。response_time_s 显式配置，验证 2×max_accel/response_time_s <= jerk_limit，避免幅度变化隐式改变响应时间。
+experiments.py 固定同一初始化、训练预算和任务参数，只改变是否训练与探索强度。B/C 各最多 400 万物理步；使用约 62.5% 当前任务、18.75% 平飞和18.75%悬停环境采集新鲜在策略数据。
 
-旧技能锚点使用相同种子建立精度基线；之后既检查成功率，也要求末段 RMSE <= 基线×1.2+0.05 m。两个门槛种子组是验证数据。持续 MC 的独立数据也用于校准选择，均不能代替最终测试集。
+验证种子用于模型选择。测试种子在训练完成后使用，不参与 best 的挑选。缓存绑定检查点 SHA、完整配置、设备、种子及回合数；改变实验契约需要新目录。其他训练种子可追加到同一实验根目录。
 
-课程跳级不复制或伪造训练记录，summary 指向真正复用的 checkpoint。训练和初始化来源单独记录；passed_after_ppo 表示更新后通过但未超过初始化基准，只有实际改善才标记 improved_by_training。不能将通过门槛直接计为 PPO 学习改善。
+比较同时输出成功变化、丢失/恢复成功数，以及双方均完成末段窗口的配对误差变化。C 还与同噪声的 C_initial 随机基线比较，避免把减噪效果全记为 PPO 收益。
+
+源代码指纹覆盖 main.py、pursuit_rl 和 tests 的 Python 源码，排除虚拟环境和构建目录。旧 run 不接受更改源码后继续 resume。

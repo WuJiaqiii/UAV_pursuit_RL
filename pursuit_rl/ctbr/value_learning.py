@@ -105,6 +105,9 @@ def calibrate_critic(model, c, root, progress):
         model.critic.load_state_dict(backup["critic"])
         model.value_norm.load_state_dict(backup["normalizer"])
         model.critic_optimizer.load_state_dict(backup["optimizer"])
+    elif tr["mc_calibration_updates"] > 0:
+        model.critic_policy_match = True
+        progress["critic_needs_calibration"] = False
     progress["mc_fit_updates"] += tr["mc_calibration_updates"]
     progress["mc_calibration_rounds"] += 1
     progress["last_mc_calibration_update"] = update

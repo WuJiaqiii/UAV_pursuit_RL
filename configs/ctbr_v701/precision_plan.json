@@ -1,0 +1,52 @@
+{
+  "schema": "pursuit-direct-ctbr-curriculum-v4",
+  "prescreen": true,
+  "early_promotion": true,
+  "gate_seed_offsets": [
+    97000,
+    197000
+  ],
+  "retention_seed_offsets": [
+    87000,
+    187000
+  ],
+  "retention_rmse_relative_budget": 0.2,
+  "retention_rmse_absolute_slack_m": 0.05,
+  "phases": [
+    {
+      "name": "01_hover_small",
+      "profile": "hover.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "01_precision_cruise",
+      "profile": "01_precision_cruise.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "02_precision_mixed",
+      "profile": "02_precision_mixed.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "03_precision_recovery",
+      "profile": "03_precision_recovery.json",
+      "retention_anchor": true
+    },
+    {
+      "name": "04_distance15",
+      "profile": "04_distance15.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "05_distance20",
+      "profile": "05_distance20.json",
+      "retention_anchor": false
+    },
+    {
+      "name": "06_distance30",
+      "profile": "06_distance30.json",
+      "retention_anchor": false
+    }
+  ]
+}
