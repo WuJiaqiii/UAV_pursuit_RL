@@ -297,7 +297,7 @@ def test_curriculum_two_stages_retention_and_restart(small, tmp_path):
         phases.append(dict(name=name, profile=f"{name}.json", retention_anchor=True))
     plan = tmp_path / "plan.json"
     plan.write_text(
-        json.dumps(dict(schema="pursuit-direct-ctbr-curriculum-v3", phases=phases))
+        json.dumps(dict(schema="pursuit-direct-ctbr-curriculum-v4", phases=phases))
     )
     result = run(plan, tmp_path / "experiment", episodes=2)
     assert len(result) == 2 and all(r["passed"] for r in result)

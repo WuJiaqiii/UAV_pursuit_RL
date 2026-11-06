@@ -9,31 +9,53 @@ from .checkpoint import load, write_json, source_fingerprint
 from .training import train
 from .evaluation import evaluate
 from .errors import ExperimentGateError
+from .selection import summary as selection_summary
 
-SCHEMA = "pursuit-direct-ctbr-curriculum-v3"
+SCHEMA = "pursuit-direct-ctbr-curriculum-v4"
 
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None
 
 
-def gate(model, c, sentinels, directory, episodes, seed, minimum_success, plan, label):
+def gate(
+    model,
+    c,
+    sentinels,
+    directory,
+    episodes,
+    seed,
+    minimum_success,
+    plan,
+    label,
+    fail_fast=False,
+):
     directory = Path(directory) / label
-    current = []
+    current, retained = [], []
+
+    def finish(ok, complete=True, reason=None):
+        result = dict(
+            passed=ok,
+            current=current,
+            retention=retained,
+            complete=complete,
+            reason=reason,
+        )
+        write_json(directory / "summary.json", result)
+        return result
+
     for offset in plan.get("gate_seed_offsets", [79000, 179000]):
         report, _ = evaluate(model, c, episodes, offset + seed)
         write_json(directory / f"current_{offset + seed}.json", report)
-        current.append(
-            dict(
-                seed=offset + seed,
-                success_rate=report["success_rate"],
-                tail_rmse=report["mean_tail_position_rmse"],
-                failures=report["failures"],
-            )
-        )
-    retained = []
+        item = selection_summary(report, c, minimum_success)
+        current.append(item)
+        if fail_fast and not item["passed"]:
+            return finish(False, False, "current_task_failed")
+
     relative = plan.get("retention_rmse_relative_budget", 0.2)
     slack = plan.get("retention_rmse_absolute_slack_m", 0.05)
+    # A failed current task can never be promoted. Full final audit can still
+    # request retention reports; periodic/prescreen checks return immediately.
     for anchor in sentinels:
         for reference in anchor["reference"]:
             report, _ = evaluate(model, anchor["config"], episodes, reference["seed"])
@@ -43,24 +65,22 @@ def gate(model, c, sentinels, directory, episodes, seed, minimum_success, plan, 
             )
             rmse = report["mean_tail_position_rmse"]
             bound = reference["tail_rmse"] * (1 + relative) + slack
-            retained.append(
-                dict(
-                    task=anchor["name"],
-                    seed=reference["seed"],
-                    success_rate=report["success_rate"],
-                    tail_rmse=rmse,
-                    rmse_budget=bound,
-                    passed=report["success_rate"] >= minimum_success
-                    and rmse is not None
-                    and rmse <= bound,
-                )
+            item = dict(
+                task=anchor["name"],
+                seed=reference["seed"],
+                success_rate=report["success_rate"],
+                tail_rmse=rmse,
+                rmse_budget=bound,
+                passed=report["success_rate"] >= minimum_success
+                and rmse is not None
+                and rmse <= bound,
             )
-    passed = all(r["success_rate"] >= minimum_success for r in current) and all(
-        r["passed"] for r in retained
+            retained.append(item)
+            if fail_fast and not item["passed"]:
+                return finish(False, False, "retained_skill_failed")
+    return finish(
+        all(r["passed"] for r in current) and all(r["passed"] for r in retained)
     )
-    result = dict(passed=passed, current=current, retention=retained)
-    write_json(directory / "summary.json", result)
-    return result
 
 
 def run(
@@ -70,8 +90,9 @@ def run(
     seed=42,
     steps=None,
     episodes=32,
-    minimum_success=0.9,
+    minimum_success=0.95,
     phases=None,
+    init_from=None,
 ):
     path = Path(plan_path).resolve()
     plan = json.loads(path.read_text())
@@ -121,6 +142,7 @@ def run(
         episodes=episodes,
         minimum_success=minimum_success,
         source_fingerprint=source_fingerprint(),
+        initial_checkpoint_sha256=digest(init_from),
         profile_fingerprints={name: fingerprint(c) for name, c in profiles.items()},
     )
     manifest_path = root / "curriculum_manifest.json"
@@ -129,7 +151,7 @@ def run(
             "Curriculum plan, source or gate configuration changed; use a new output root"
         )
     write_json(manifest_path, manifest)
-    parent, recent = None, None
+    parent, recent = Path(init_from).resolve() if init_from else None, None
     rows, sentinels = [], []
     for index, phase in enumerate(selected):
         c = copy.deepcopy(profiles[phase["name"]])
@@ -172,7 +194,7 @@ def run(
                 raise ValueError(
                     "Parent checkpoint changed: use a new curriculum output root"
                 )
-            best = directory / "checkpoints/best.pt"
+            best = directory / "checkpoints/best_current.pt"
             status = "trained"
         else:
             if parent is not None and plan.get("prescreen", True):
@@ -187,6 +209,7 @@ def run(
                     minimum_success,
                     plan,
                     phase["name"],
+                    fail_fast=True,
                 )
             if screening is not None and screening["passed"]:
                 comparison = copy.deepcopy(c)
@@ -203,7 +226,7 @@ def run(
                 best = Path(parent)
                 status = "skipped_already_mastered"
             else:
-                best = directory / "checkpoints/best.pt"
+                best = directory / "checkpoints/best_current.pt"
                 status = "trained"
         if status != "skipped_already_mastered":
             anchor = (
@@ -214,9 +237,9 @@ def run(
             replay = dict(recent=recent, anchor=anchor) if recent or anchor else None
 
             def promotion_check(model, current_config, progress):
-                if (
-                    not plan.get("early_promotion", True)
-                    or progress["physics_steps"] < minimum_steps
+                if not plan.get("early_promotion", True) or (
+                    progress["ppo_updates"] > 0
+                    and progress["physics_steps"] < minimum_steps
                 ):
                     return False
                 report = gate(
@@ -229,6 +252,7 @@ def run(
                     minimum_success,
                     plan,
                     f"promotion_{progress['ppo_updates']:05d}",
+                    fail_fast=True,
                 )
                 return report["passed"]
 
@@ -240,6 +264,9 @@ def run(
                 replay=replay,
                 promotion_check=promotion_check,
             )
+        feasible_path = directory / "checkpoints/best_feasible.pt"
+        if status != "skipped_already_mastered" and feasible_path.exists():
+            best = feasible_path
         model, _, saved = load(best, device)
         result = (
             screening
@@ -261,7 +288,7 @@ def run(
             status = (
                 "improved_by_training"
                 if origin == "ppo"
-                and saved["progress"]["selected_improved_over_initial"]
+                and saved["progress"]["best_feasible_improved_over_initial"]
                 else (
                     "passed_after_ppo"
                     if origin == "ppo"

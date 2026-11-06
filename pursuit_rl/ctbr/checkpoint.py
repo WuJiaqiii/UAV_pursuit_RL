@@ -18,13 +18,15 @@ from .config import (
 )
 from .environment import PRIVILEGED_DIM
 
-SCHEMA = "pursuit-direct-ctbr-checkpoint-v3"
+SCHEMA = "pursuit-direct-ctbr-checkpoint-v4"
+LEGACY_SCHEMA = "pursuit-direct-ctbr-checkpoint-v3"
 
 
 def model_config(c):
     p, t = c["policy"], c["training"]
     return dict(
         action_dim=4,
+        position_error_cap_m=p["position_error_cap_m"],
         hidden_actor=p["hidden_actor"],
         hidden_critic=p["hidden_critic"],
         log_std_init=math.log(p["initial_std"]),
@@ -66,7 +68,12 @@ def new_model(c, optimizers=True):
 def source_fingerprint():
     root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
-    for p in sorted(root.rglob("*.py")):
+    paths = [
+        root / "main.py",
+        *(root / "pursuit_rl").rglob("*.py"),
+        *(root / "tests").rglob("*.py"),
+    ]
+    for p in sorted(paths):
         digest.update(p.relative_to(root).as_posix().encode())
         digest.update(p.read_bytes())
     return digest.hexdigest()
@@ -110,26 +117,102 @@ def save(path, model, c, progress, origin):
 
 def load(path, device=None, optimizers=False):
     data = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+    if not isinstance(data, dict) or data.get("schema") not in (SCHEMA, LEGACY_SCHEMA):
         raise ValueError(
-            "Expected direct-CTBR v3 checkpoint; v690/v691 and velocity checkpoints are incompatible with the new clocks/observations"
+            "Expected direct-CTBR v4 or v700/v3 checkpoint; v690/v691 and velocity checkpoints are incompatible"
+        )
+    legacy = data["schema"] == LEGACY_SCHEMA
+    if legacy and optimizers:
+        raise ValueError(
+            "v700 checkpoints are inference-only here; use migrate before training, not resume"
         )
     c = copy.deepcopy(data["config"])
+    expected_schema = "pursuit-ctbr-v3" if legacy else DEFAULT["schema"]
+    if c.get("schema") != expected_schema:
+        raise ValueError("Mismatched checkpoint/config schema")
     if fingerprint(c) != data["fingerprint"] or interface(c) != data["interface"]:
         raise ValueError("Corrupt or mismatched checkpoint contract")
+    if legacy:
+        c["schema"] = DEFAULT["schema"]
+        # v700 inference MUST preserve its original unbounded Actor input.
+        c["policy"]["position_error_cap_m"] = 0.0
     c = validate(merge(copy.deepcopy(DEFAULT), c))
     if device is not None:
         c["device"] = device
     model = new_model(c, optimizers)
-    if model.config != data["model_config"]:
+    expected = copy.deepcopy(model.config)
+    if legacy:
+        expected.pop("position_error_cap_m")
+    if expected != data["model_config"]:
         raise ValueError("Model configuration mismatch")
     model.load_state_dict(data["model"])
+    model.critic_policy_match = not data["progress"].get(
+        "critic_needs_calibration", False
+    )
     if optimizers:
         model.actor_optimizer.load_state_dict(data["actor_optimizer"])
         model.critic_optimizer.load_state_dict(data["critic_optimizer"])
         if model.predictor_optimizer is not None:
             model.predictor_optimizer.load_state_dict(data["predictor_optimizer"])
     return model, c, data
+
+
+def migration_contract(c):
+    contract = interface(c)
+    contract.pop("schema")
+    contract.pop("observation")
+    contract["policy"].pop("position_error_cap_m", None)
+    return contract
+
+
+def migrate(source, config, out, reset_std=True):
+    """Explicitly transfer compatible v700/v701 weights into a new experiment.
+
+    Only task/training settings, Actor position encoding and initial exploration
+    may change. No optimizer or RNG continuation; the new critic needs fresh MC.
+    """
+    path = Path(out)
+    if path.exists():
+        raise FileExistsError("Migration output already exists")
+    parent, old, saved = load(source, config["device"])
+    if migration_contract(old) != migration_contract(config):
+        raise ValueError(
+            "Migration changes dynamics, reward, feature layout or control timing"
+        )
+    model = new_model(config)
+    model.load_state_dict(parent.state_dict())
+    with torch.no_grad():
+        if reset_std:
+            model.log_std.fill_(math.log(config["policy"]["initial_std"]))
+        model.log_std.clamp_(
+            math.log(config["policy"]["min_std"]), math.log(config["policy"]["max_std"])
+        )
+    origin = dict(
+        source_path=str(Path(source).resolve()),
+        source_sha256=hashlib.sha256(Path(source).read_bytes()).hexdigest(),
+        source_schema=saved["schema"],
+        source_origin=saved["origin"],
+        source_progress=copy.deepcopy(saved["progress"]),
+        old_position_error_cap_m=old["policy"]["position_error_cap_m"],
+        position_error_cap_m=config["policy"]["position_error_cap_m"],
+        reset_std=reset_std,
+        initial_std=model.log_std.detach().exp().cpu().tolist(),
+        actor_and_predictor_weights_unchanged=True,
+        optimizers_reset=True,
+    )
+    progress = dict(
+        physics_steps=0,
+        ppo_updates=0,
+        cumulative_ppo_physics_steps=saved["progress"].get(
+            "cumulative_ppo_physics_steps", 0
+        ),
+        critic_needs_calibration=True,
+        migration=origin,
+    )
+    model.critic_policy_match = False
+    save(path, model, config, progress, "explicit_migration")
+    write_json(path.with_suffix(".migration.json"), origin)
+    return model, origin
 
 
 def write_json(path, value):

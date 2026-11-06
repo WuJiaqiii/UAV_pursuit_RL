@@ -1,100 +1,109 @@
-# v7.0 实验操作
+# v701 下一步实验
 
-## 建议顺序
+## 第一轮：单种子 A/B/C
 
-先执行测试与 smoke，再用 seed 42 跑课程；查看基础课门槛、critic_correction 与 forecast 指标后，再扩展到 43、44。
+在仓库目录、原训练环境中执行：
 
 ~~~bash
-pytest -q
-python main.py train --config configs/ctbr/smoke.json --device cpu --out runs/v700_smoke
-SEEDS=42 DEVICE=cuda bash scripts/run_ctbr_curriculum.sh runs/ctbr_v700
+SEEDS=42 DEVICE=cuda PYTHON_BIN=python \
+bash scripts/run_ctbr_v701_experiments.sh runs/ctbr_v701
 ~~~
 
-新实验必须使用空目录；相同命令和输出目录可继续课程。不要复用 ctbr_v691 目录，也不要在同一 run 里切换代码、控制频率或预测模式。旧检查点与 v3 不兼容。
+若原检查点位于其他位置：
 
-## 课程
+~~~bash
+SOURCE_CHECKPOINT="/absolute/path/to/v700/best.pt" SEEDS=42 DEVICE=cuda \
+bash scripts/run_ctbr_v701_experiments.sh runs/ctbr_v701
+~~~
 
-| 阶段 | 变化 |
+默认 source 是已核查的 v700 第 15 级 best，SHA256 为：
+
+~~~text
+6725525b6b4b9d49275440789d8982335214315b6e477e334942b57d2322156e
+~~~
+
+使用其他模型需要复制计划并明确修改 source_sha256，然后通过 main.py experiment --plan 指定。原始检查点不会修改。
+
+## 实验设置
+
+| 内容 | 配置 |
 |---|---|
-| 01–03 | 悬停、小扰动恢复、移动定点保持 |
-| 04–09 | 近距低速跟随，加速度 0→0.25→0.5→1→1.5→2 |
-| 10–11 | 逐步加入转弯和 Singer 机动 |
-| 12 | 单独取消初速匹配 |
-| 13–15 | 距离上限 5→10→30 m |
-| 16–20 | 速度上限 4→6 m/s，距离上限 50 m，再转到 10–50 m、2–6 m/s |
-| 21–24 | 随机模式、切换间隔、jerk 预算、加速度 3 m/s² |
-| 25–30 | 速度 8 m/s、距离 70 m、OU 时间、快速切换、响应时间 |
-| 31–34 | 加速度 5 m/s²、速度 10 m/s、距离 100 m、持续 60 s |
+| 决策/积分 | 100 Hz / 1 kHz |
+| Actor 位置误差限幅 | 5 m；critic 保留真实距离 |
+| A | 冻结迁移后的策略，标准差 0.07 |
+| B | 最多 400 万物理步，初始标准差 0.07 |
+| C | 最多 400 万物理步，初始标准差 0.03 |
+| B/C 当前任务 | 初始距离 0–2 m、速度 0.5–2 m/s、混合机动 2 m/s² |
+| 时长与原任务定义 | 完整 45 s，末段 10 s，2 m 半径及 90% 占比 |
+| 额外精度门槛 | 成功率至少 95%，末段位置 RMSE≤0.5 m |
+| 预测器 | 保留同一预测器权重，三组均冻结 |
+| replay | 平飞与悬停，新鲜在策略采样 |
+| ValueNorm/MC | B/C 重新 MC 预热，持续校准保持同一设置 |
 
-每级 2000 万物理步是最大预算。程序先对父模型做两组种子的完整时长筛查，已掌握的级别跳过。训练通过多组当前任务和旧技能/精度门槛后提前升级；否则预算结束后仍失败就停止，并保留结果。
+本轮固定奖励、网络规模和推力映射。风险分层 MC、平滑推力映射作为后续独立对照。
 
-01 级保留 BC/DAgger 初始化，02–04 级可进行带接受检查的教师迁移拟合；05 级起 transfer_dagger_updates=0。PPO 动作从不混入教师动作。初始化通过不是 PPO 改善。
+400 万是每个 B/C 的 PPO 预算，不包含 MC、验证或测试模拟步。每组有合格候选可提前结束；无候选则记录未达标并完成评估，随后继续下一组。不要因为看到 precision failed 就当作程序异常。
 
-训练混合比例按并行环境数四舍五入，因此小规模检查未必恰好 60/20/20。日志 training_distribution 给出实际比例。保留锚点轮换参与采样，所有锚点参与升级验证。
+## 看哪些结果
 
-## 单项运行、继续和迁移
+experiment_summary.json 汇总全部种子，seed_42/comparison.json 保存完整对照。每组均测试近距机动、0–30 m 接近和悬停。
+
+- primary_test_passed：独立测试中的近距成功率和精度。
+- precision_validation_passed：是否在验证中取得 best_feasible。
+- local_ppo_updates：实际执行更新数。
+- selected_ppo_updates：最终选中模型执行过多少次局部更新；可能为零。
+- vs_frozen_A_deterministic：与冻结基线的配对比较。
+- vs_own_initial_stochastic：B 与 A、C 与同噪声 C_initial 的随机策略比较。
+- lost_successes 和 paired_complete_tail_episodes：防止只看幸存回合误差而忽略安全退化。
+
+A 的 0–30 m 成功率高而精度约 1 m，是预期基线；本轮先改善近距精度，保留远距接近安全性。额外精度门槛不会改变原任务 success_rate 定义。
+
+## 目录
+
+| 文件/目录 | 用途 |
+|---|---|
+| experiment_manifest.json | 源模型、源码、配置和评估约束 |
+| seed_42/initializations/ | A/B/C 显式迁移检查点与回执 |
+| seed_42/references/ | 冻结 A 的保留任务验证基线 |
+| seed_42/B、C/metrics.jsonl | PPO、ValueNorm、MC 和实际采样分配 |
+| B、C/checkpoints/best_current.pt | 任务评分最优候选，包含初始化 |
+| B、C/checkpoints/best_feasible.pt | 满足全部晋级条件时才存在 |
+| B、C/selection_*/summary.json | 当前精度及保留门槛，含提前返回原因 |
+| A、B、C/test/ | 独立确定性和随机策略测试 |
+| seed_42/C_initial/ | 同噪声冻结随机基线 |
+
+迁移回执标明标准差是否重设。A 的 critic 未在新策略下预热，critic_matches_policy=false；B/C 校准后再开始学习。
+
+## 中断与多种子
+
+重新执行完全相同的命令和目录，可继续未完成的 B/C，复用已完成迁移与评估。保持源码、设备和回合数一致。修改设置后使用新实验目录。
+
+确认 seed 42 后：
 
 ~~~bash
-python main.py train --config configs/ctbr/01_hover_small.json \
-  --device cuda --out runs/v700_hover42 --seed 42
-
-python main.py train --config configs/ctbr/01_hover_small.json \
-  --device cuda --out runs/v700_hover42 --seed 42 \
-  --resume runs/v700_hover42/checkpoints/latest.pt
+SEEDS="42 43 44" DEVICE=cuda \
+bash scripts/run_ctbr_v701_experiments.sh runs/ctbr_v701
 ~~~
 
-单项 resume 只允许变更总预算和设备，必须保留相同源代码。在课程中运行的模型还需相同混合任务，应重新执行课程命令恢复。
+这是共同预训练初始化上的三个微调随机种子，不代表三次独立从零训练。
 
-单独在兼容 v3 模型间转移任务：
+## 显式迁移与后续课程
+
+独立迁移示例：
 
 ~~~bash
-python main.py train --config configs/ctbr/05_near_a025.json --device cuda \
-  --out runs/v700_a025 --init-from PATH_TO_V3_BEST_CHECKPOINT
+python main.py migrate --checkpoint PATH_TO_V700_BEST \
+  --config configs/ctbr_v701/B.json --out runs/v701_transfer/B.pt --device cuda
 ~~~
 
-改变时钟、预测模块结构、奖励或 ValueNorm 接口需要新实验，不允许静默加载不匹配权重。
+新版只读评估旧 v700 时自动保留未限幅行为；迁移后才使用 5 m Actor 编码。不能直接 resume v700。
 
-## 独立评估
+后续可从同契约 v701 检查点运行精度课程：
 
 ~~~bash
-python main.py evaluate --checkpoint PATH_TO_V3_CHECKPOINT \
-  --config configs/ctbr/20_maneuver_pursuit.json --device cuda \
-  --seed 110042 --episodes 256 --out runs/test_det.json
-
-python main.py evaluate --checkpoint PATH_TO_V3_CHECKPOINT \
-  --config configs/ctbr/20_maneuver_pursuit.json --device cuda --stochastic \
-  --seed 110042 --episodes 256 --out runs/test_stoch.json
+python main.py curriculum --plan configs/ctbr_v701/precision_plan.json \
+  --init-from PATH_TO_V701_CHECKPOINT --out runs/v701_precision \
+  --device cuda --seed 42 --episodes 64 --minimum-success 0.95
 ~~~
 
---reference 运行相同决策频率的几何控制器；--trace-dir 可以保存轨迹。critic_matches_policy 仅在随机策略评估时为 true。确定性追踪回报不能直接当作随机策略价值真值。
-
-最终脚本根据 curriculum_summary.json 的真实选定模型和任务 profile 评估，支持最后一级被跳过的情况。
-
-## 关键输出
-
-- config.json、curriculum_manifest.json：完整配置及课程/源代码约束。
-- metrics.jsonl：PPO、预测器拟合、持续纠偏、实际采样分配。
-- initial_validation.json、validation_*.json：完整时长确定性表现与冻结预测误差。
-- calibration_*.json：随机策略初始价值校准测量。
-- critic_correction_*.json：持续 MC 纠偏的训练/校准验证种子、拟合前后误差、接受或回滚。
-- gate/summary.json、promotion_*/summary.json：两组当前任务及旧技能精度门槛。
-- phase_skip.json：已掌握任务复用的真实父模型，不代表该级训练过。
-- curriculum_summary.json：通过状态、模型来源、选定路径和 SHA256。
-- first_anomaly.pt：首个 PPO/采样数值异常的状态和 rollout。
-- checkpoints/initial.pt、best.pt、latest.pt、update_*.pt：保存 Actor、critic、预测器、ValueNorm、三个优化器与随机状态。
-
-预测报告中的 learned、constant_velocity、constant_acceleration 为相同有效窗口上的每坐标位置 RMSE，按预测时长分别报告。预测训练误差必须与独立冻结评估分开看。样本跨终止或未来不足时不计入，样本数同时输出。
-
-prediction_fit.accepted 表示预测更新是否通过拟合保护检查；updates 只统计接受的优化步，attempted_updates 包含被回滚的尝试。PPO 与课程日志同样区分“更新后通过”和“相对初始化确有改善”。
-
-## 对照开关
-
-创建新的 profile 和输出目录，其他参数保持一致：
-
-- prediction.enabled=false：关闭历史预测特征。
-- prediction.mode=constant_velocity / constant_acceleration / lstm：比较预测模型。
-- critic.value_norm=false：关闭价值目标归一化。
-- training.mc_calibration_every_updates=0：关闭持续纠偏，保留初始化预热和校准测量。
-- policy.decision_steps=1 或 10：比较 1 kHz 和 100 Hz 决策。
-
-频率对照还应保持相同物理 rollout 时长与 BC 数据采样间隔：例如 410×10 ms 对应约 4100×1 ms；bc_stride=2 对应 20。探索相关性、gamma 和 lambda 自动按秒换算；历史窗口覆盖的物理时长也需匹配。分别改变 ValueNorm、MC、预测器与采样分布才能判断各自贡献。
+该计划先检查悬停并建立保留基线，再依次训练平飞、混合机动、初速恢复及 15/20/30 m 距离，阶段预算 400 万。先审阅 A/B/C 结果再选择续接模型。旧的 34 级计划仍保留，当前推荐从较小的精度计划开始。

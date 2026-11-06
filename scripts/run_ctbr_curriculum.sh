@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_ROOT="${1:-runs/ctbr_v700}"
+OUT_ROOT="${1:-runs/ctbr_v701_curriculum}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 DEVICE="${DEVICE:-cuda}"
 read -r -a SEED_LIST <<< "${SEEDS:-42 43 44}"
@@ -11,8 +11,8 @@ for seed in "${SEED_LIST[@]}"; do
     if "$PYTHON_BIN" main.py curriculum --plan configs/ctbr/plan.json \
         --out "$seed_root" --device "$DEVICE" --seed "$seed" \
         --physics-steps "${PHYSICS_STEPS:-20000000}" \
-        --episodes "${GATE_EPISODES:-64}" --minimum-success "${MIN_SUCCESS:-0.9}"; then
-        test_seed=$((110000 + seed))
+        --episodes "${GATE_EPISODES:-64}" --minimum-success "${MIN_SUCCESS:-0.95}"; then
+        test_seed=$((310000 + seed))
         checkpoint="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["phases"][-1]["selected_checkpoint"])' "$seed_root/curriculum_summary.json")"
         profile="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["phases"][-1]["profile"])' "$seed_root/curriculum_summary.json")"
         "$PYTHON_BIN" main.py evaluate --checkpoint "$checkpoint" --config "$profile" \

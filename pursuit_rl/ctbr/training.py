@@ -13,6 +13,7 @@ from .environment import CTBRBatch
 from .control import teacher
 from .evaluation import evaluate, score, improved
 from .errors import ExperimentGateError
+from .selection import passed
 from .value_learning import fit_critic, calibrate_critic
 from .mixture import training_env, target_positions
 from pursuit_rl.learning.prediction import supervised_windows, fit_predictor
@@ -81,6 +82,7 @@ def fit_actor(model, data, updates, batch_size):
     inputs = x
     x = inputs.new_zeros(len(inputs), first.in_features)
     x[:, :21] = inputs[:, :21]
+    x = model.bound_actor_input(x)
     center = x.mean(0)
     scale = x.std(0, unbiased=False).clamp_min(0.01)
     scale[21:] = 1
@@ -180,6 +182,10 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         best_origin=None,
         initial_score=None,
         selected_improved_over_initial=False,
+        best_feasible_score=None,
+        best_feasible_origin=None,
+        best_feasible_improved_over_initial=False,
+        critic_needs_calibration=False,
     )
     if resume:
         model, old, saved = load(resume, c["device"], optimizers=True)
@@ -227,6 +233,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     "Transfer would change action, observation, dynamics, reward or exploration contract"
                 )
             model.load_state_dict(parent.state_dict())
+            model.critic_policy_match = False
+            progress["critic_needs_calibration"] = True
             progress["parent_physics_steps"] = saved["progress"][
                 "cumulative_ppo_physics_steps"
             ]
@@ -236,6 +244,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 origin=saved["origin"],
                 ppo_updates=saved["progress"]["ppo_updates"],
                 critic="warm weights, fresh optimizers + new MC calibration",
+                migration=saved["progress"].get("migration"),
             )
             origin = "transfer_initial"
             del parent
@@ -340,6 +349,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             for e in calibration["episodes_detail"]
         )
         fit = fit_critic(model, data, tr["critic_updates"], tr["batch_size"])
+        if tr["critic_updates"] > 0:
+            model.critic_policy_match = True
+            progress["critic_needs_calibration"] = False
         del data
         heldout, _ = evaluate(
             model, c, tr["mc_episodes"], 910000 + c["seed"], stochastic=True
@@ -367,7 +379,15 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         progress["initial_score"] = list(score(initial))
         progress["best_origin"] = origin
         progress["cumulative_ppo_physics_steps"] = progress["parent_physics_steps"]
-        for name in ("initial", "best", "latest"):
+        feasible = passed(initial, c)
+        if feasible and promotion_check is not None:
+            feasible = promotion_check(model, c, progress)
+        if feasible:
+            progress["best_feasible_score"] = list(score(initial))
+            progress["best_feasible_origin"] = origin
+            progress["promotion_passed"] = promotion_check is not None
+            save(ckpt / "best_feasible.pt", model, c, progress, origin)
+        for name in ("initial", "best", "best_current", "latest"):
             save(ckpt / f"{name}.pt", model, c, progress, origin)
         emit(
             root,
@@ -416,7 +436,10 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
     next_validation = (progress["physics_steps"] // tr["validation_every"] + 1) * tr[
         "validation_every"
     ]
-    while progress["physics_steps"] < tr["physics_steps"]:
+    while (
+        progress["physics_steps"] < tr["physics_steps"]
+        and not progress["promotion_passed"]
+    ):
         ticks = min(
             tr["rollout_steps"],
             math.ceil(
@@ -532,7 +555,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         )
         progress["completed_episodes"] += len(records)
         progress["successful_episodes"] += sum(r["success"] for r in records)
-        if model.predictor_optimizer is not None:
+        if model.predictor_optimizer is not None and tr["prediction_updates_enabled"]:
             history = buf.obs[:, :, env.base_actor_dim :].reshape(
                 ticks, env.n, c["prediction"]["history_steps"], 10
             )
@@ -640,14 +663,21 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     report, progress["initial_score"]
                 )
                 save(ckpt / "best.pt", model, c, progress, "ppo")
-            if promotion_check is not None and promotion_check(model, c, progress):
-                progress["promotion_passed"] = True
-                progress["best_score"] = list(score(report))
-                progress["best_origin"] = "ppo"
-                progress["selected_improved_over_initial"] = improved(
-                    report, progress["initial_score"]
-                )
-                save(ckpt / "best.pt", model, c, progress, "ppo")
+                save(ckpt / "best_current.pt", model, c, progress, "ppo")
+            feasible = passed(report, c)
+            if feasible and promotion_check is not None:
+                feasible = promotion_check(model, c, progress)
+            if feasible:
+                progress["promotion_passed"] = promotion_check is not None
+                if progress["best_feasible_score"] is None or improved(
+                    report, progress["best_feasible_score"]
+                ):
+                    progress["best_feasible_score"] = list(score(report))
+                    progress["best_feasible_origin"] = "ppo"
+                    progress["best_feasible_improved_over_initial"] = improved(
+                        report, progress["initial_score"]
+                    )
+                    save(ckpt / "best_feasible.pt", model, c, progress, "ppo")
             next_validation = (
                 progress["physics_steps"] // tr["validation_every"] + 1
             ) * tr["validation_every"]

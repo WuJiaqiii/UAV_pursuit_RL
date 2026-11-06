@@ -26,7 +26,8 @@
     ],
     "ou_time": 0.6,
     "jerk_limit": 10.0,
-    "response_time_s": 0.4
+    "response_time_s": 0.4,
+    "maximum_tail_rmse": 0.3
   },
   "training": {
     "physics_steps": 20000000,

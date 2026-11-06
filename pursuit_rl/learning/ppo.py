@@ -30,6 +30,7 @@ class AsymmetricPPO(nn.Module):
         self.memory_start = int(config.get("exploration_memory_start", 0))
         self.obs_dim = obs_dim
         self.base_obs_dim = config.get("base_obs_dim", obs_dim)
+        self.position_error_cap_m = float(config.get("position_error_cap_m", 0.0))
         self.prediction_config = config.get("prediction", {"enabled": False})
         self.predictor = (
             TrajectoryPredictor(self.prediction_config)
@@ -100,6 +101,18 @@ class AsymmetricPPO(nn.Module):
         normalized = self.critic(self.critic_features(critic_obs)).squeeze(-1)
         return self.value_norm.denormalize(normalized)
 
+    def bound_actor_input(self, features):
+        """Bound only the Actor's position vector, preserving real critic state."""
+        if self.position_error_cap_m <= 0:
+            return features
+        features = features.clone()
+        position = features[..., :3]
+        length = torch.linalg.vector_norm(position, dim=-1, keepdim=True)
+        features[..., :3] = position * (
+            self.position_error_cap_m / 30.0 / length.clamp_min(1e-9)
+        ).clamp(max=1)
+        return features
+
     @torch.no_grad()
     def update_value_statistics(self, returns):
         """Rebase the output head when units change, preserving raw V predictions.
@@ -130,6 +143,7 @@ class AsymmetricPPO(nn.Module):
 
     def distribution_parameters(self, obs, prepared=False):
         obs = obs if prepared else self.actor_features(obs)
+        obs = self.bound_actor_input(obs)
         target_mean = self.actor(obs)
         if self.rho:
             previous = obs[..., self.memory_start : self.memory_start + self.action_dim]

@@ -12,11 +12,13 @@ from pursuit_rl.ctbr.training import train
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.curriculum import run
 from pursuit_rl.ctbr.errors import ExperimentGateError
+from pursuit_rl.ctbr.experiments import run as run_experiment
+from pursuit_rl.ctbr.checkpoint import migrate
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--version", action="version", version="7.0.0")
+    p.add_argument("--version", action="version", version="7.0.1")
     commands = p.add_subparsers(dest="command", required=True)
     t = commands.add_parser("train")
     t.add_argument("--config", required=True)
@@ -43,9 +45,27 @@ def parser():
     q.add_argument("--out", required=True)
     q.add_argument("--physics-steps", type=int)
     q.add_argument("--episodes", type=int, default=32)
-    q.add_argument("--minimum-success", type=float, default=0.9)
+    q.add_argument("--minimum-success", type=float, default=0.95)
     q.add_argument("--phases", nargs="+")
-    for sub in (t, e, q):
+    q.add_argument("--init-from", help="Explicit same-interface v701 initialization")
+    m = commands.add_parser(
+        "migrate", help="Explicitly migrate v700 weights into a new v701 contract"
+    )
+    m.add_argument("--checkpoint", required=True)
+    m.add_argument("--config", required=True)
+    m.add_argument("--out", required=True)
+    m.add_argument("--preserve-std", action="store_true")
+    x = commands.add_parser(
+        "experiment", help="Run the paired frozen-A / PPO-B / low-noise-C protocol"
+    )
+    x.add_argument("--plan", default="configs/ctbr_v701/experiment.json")
+    x.add_argument("--source-checkpoint", required=True)
+    x.add_argument("--out", required=True)
+    x.add_argument("--seeds", type=int, nargs="+", default=[42])
+    x.add_argument("--test-episodes", type=int)
+    x.add_argument("--device", default="cpu")
+    x.add_argument("--cpu-threads", type=int, default=1)
+    for sub in (t, e, q, m):
         sub.add_argument("--device", default="cpu")
         sub.add_argument("--seed", type=int, default=42)
         sub.add_argument("--cpu-threads", type=int, default=1)
@@ -55,6 +75,24 @@ def parser():
 def execute(argv=None):
     args = parser().parse_args(argv)
     torch.set_num_threads(args.cpu_threads)
+    if args.command == "experiment":
+        return run_experiment(
+            args.plan,
+            args.source_checkpoint,
+            args.out,
+            args.device,
+            args.seeds,
+            args.test_episodes,
+        )
+    if args.command == "migrate":
+        _, receipt = migrate(
+            args.checkpoint,
+            load(args.config, args.device, args.seed),
+            args.out,
+            reset_std=not args.preserve_std,
+        )
+        print(json.dumps(receipt, ensure_ascii=False, allow_nan=False))
+        return receipt
     if args.command == "train":
         c = load(args.config, args.device, args.seed)
         if args.physics_steps is not None:
@@ -72,6 +110,7 @@ def execute(argv=None):
             args.episodes,
             args.minimum_success,
             args.phases,
+            init_from=args.init_from,
         )
     model, c, saved = checkpoint_load(args.checkpoint, args.device)
     if args.config:
@@ -107,7 +146,8 @@ def execute(argv=None):
     error = report["mean_tail_position_rmse"]
     tail = f"{error:.3f} m" if error is not None else "N/A (no complete tail window)"
     print(
-        f"{report['successes']}/{report['episodes']} sustained successes; tail RMSE {tail}"
+        f"{report['successes']}/{report['episodes']} sustained successes; tail RMSE {tail}; "
+        f"precision <= {report['precision_rmse_limit_m']:g} m: {'passed' if report['precision_passed'] else 'failed'}"
     )
     return report
 

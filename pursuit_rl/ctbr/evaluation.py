@@ -158,6 +158,12 @@ def evaluate(
         physics_hz=1000,
         decision_hz=1 / decision_dt(c),
         decision_steps=c["policy"]["decision_steps"],
+        actor_position_error_cap_m=(
+            model.position_error_cap_m if model is not None else None
+        ),
+        action_std=(
+            model.log_std.detach().exp().cpu().tolist() if model is not None else None
+        ),
         policy=(
             "geometric_reference"
             if reference
@@ -172,6 +178,11 @@ def evaluate(
         ),
         mean_position_rmse=mean("position_rmse"),
         mean_tail_position_rmse=tail_mean("tail_position_rmse"),
+        precision_rmse_limit_m=c["task"]["maximum_tail_rmse"],
+        precision_passed=(
+            tail_mean("tail_position_rmse") is not None
+            and tail_mean("tail_position_rmse") <= c["task"]["maximum_tail_rmse"]
+        ),
         mean_tail_velocity_rmse=tail_mean("tail_velocity_rmse"),
         mean_tail_within_fraction=tail_mean("tail_within_fraction"),
         full_tail_episodes=len(full_tail),
@@ -184,7 +195,9 @@ def evaluate(
             (values - returns).std(unbiased=False) / math.sqrt(episodes)
         ),
         critic_mc_rmse=float((values - returns).square().mean().sqrt()),
-        critic_matches_policy=stochastic and not reference,
+        critic_matches_policy=stochastic
+        and not reference
+        and getattr(model, "critic_policy_match", True),
         reward_scale=c["reward"]["scale"],
         initial_state_digest=hashlib.sha256(
             json.dumps(signatures, sort_keys=True).encode()
