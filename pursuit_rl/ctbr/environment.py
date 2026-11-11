@@ -80,6 +80,10 @@ class CTBRBatch:
             "ticks",
         ):
             setattr(self, name, torch.zeros(self.n, device=self.device))
+        self.tail_axis_p2 = torch.zeros_like(self.center)
+        self.tail_axis_error = torch.zeros_like(self.center)
+        self.tail_projection = torch.zeros(self.n, device=self.device)
+        self.tail_projection_count = torch.zeros(self.n, device=self.device)
         self.initial_rel_pos = torch.zeros_like(self.center)
         self.initial_target_vel = torch.zeros_like(self.center)
         self.final_obs = None
@@ -124,6 +128,10 @@ class CTBRBatch:
             "ticks",
         ):
             getattr(self, name)[mask] = 0
+        self.tail_axis_p2[mask] = 0
+        self.tail_axis_error[mask] = 0
+        self.tail_projection[mask] = 0
+        self.tail_projection_count[mask] = 0
         self.first_acquisition[mask] = -1.0
         self.minimum_distance[mask] = float("inf")
         self.ou[mask] = 0
@@ -520,6 +528,15 @@ class CTBRBatch:
         tail = active & (self.steps > self.max_steps - self.tail_steps)
         self.tail_count += tail.float()
         self.tail_good += (tail & within).float()
+        error = (t.pos - u.pos).float()
+        velocity = t.vel.float()
+        self.tail_axis_p2 += torch.where(tail[:, None], error.square(), 0.0)
+        self.tail_axis_error += torch.where(tail[:, None], error, 0.0)
+        speed2 = velocity.square().sum(1)
+        moving_tail = tail & (speed2 >= 0.2 ** 2)
+        projection = (error * velocity).sum(1) / speed2.clamp_min(0.2 ** 2)
+        self.tail_projection += torch.where(moving_tail, projection, 0.0)
+        self.tail_projection_count += moving_tail.float()
         self.tail_p2 += torch.where(tail, distance.square(), 0.0)
         self.tail_v2 += torch.where(tail, v_error.square(), 0.0)
         self.sat_count += (active & (action.abs() > 0.98).any(1)).float()
@@ -645,6 +662,13 @@ class CTBRBatch:
                         tail_steps_observed=int(v[18]),
                         tail_steps_required=self.tail_steps,
                         tail_complete=int(v[18]) >= self.tail_steps,
+                        tail_axis_rmse_m=(self.tail_axis_p2[slot] / count[slot]).sqrt().cpu().tolist(),
+                        tail_axis_mean_error_m=(self.tail_axis_error[slot] / count[slot]).cpu().tolist(),
+                        tail_velocity_projection_s=(
+                            float(self.tail_projection[slot] / self.tail_projection_count[slot])
+                            if self.tail_projection_count[slot] > 0 else None
+                        ),
+                        tail_velocity_projection_samples=int(self.tail_projection_count[slot]),
                     )
                 )
         return reward * r["scale"], done, records

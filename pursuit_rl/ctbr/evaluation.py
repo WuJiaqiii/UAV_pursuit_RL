@@ -204,6 +204,24 @@ def evaluate(
         ).hexdigest(),
         episodes_detail=records,
     )
+    report["joint_precision_success_rate"] = sum(
+        r["success"] and r["tail_complete"]
+        and r["tail_position_rmse"] <= c["task"]["maximum_tail_rmse"]
+        for r in records
+    ) / episodes
+    report["mean_tail_axis_rmse_m"] = (
+        [sum(r["tail_axis_rmse_m"][i] for r in full_tail) / len(full_tail)
+         for i in range(3)] if full_tail else None
+    )
+    report["tail_position_rmse_p95_m"] = (
+        float(torch.quantile(torch.tensor([r["tail_position_rmse"] for r in full_tail]), 0.95))
+        if full_tail else None
+    )
+    report["velocity_projection_definition"] = (
+        "Mean dot(target-pursuer, target_velocity)/speed^2 over tail physics ticks "
+        "with target speed >=0.2 m/s; positive means behind along velocity; "
+        "a geometric proxy, not identified latency. Per-episode values include partial tails."
+    )
     if forecast_reports:
         horizons = c["prediction"]["horizons_s"]
         counts = [
