@@ -85,24 +85,35 @@ def collect(model, config, episodes, seed, stride=5):
         successes=sum(r['success'] for r in records))
 
 
-def fit(model, data, updates=500, batch_size=2048, lr=3e-5):
+def fit(model, data, updates=500, batch_size=2048, lr=3e-5, *, on_update=None, anchor_weight=0):
     """Fit executed conditional mean, with frozen predictor and exploration std."""
     obs, labels = data
     with torch.no_grad():
         features = torch.cat([model.actor_features(x) for x in obs.split(batch_size)])
+    reference = None
+    if anchor_weight:
+        with torch.no_grad():
+            reference = torch.cat([model.distribution_parameters(x, prepared=True)[0].tanh()
+                                   for x in features.split(batch_size)])
     opt = torch.optim.Adam(model.actor.parameters(), lr=lr)
     loss_value = None
-    for _ in range(updates):
+    for update in range(1, updates + 1):
         ids = torch.randint(len(obs), (min(batch_size, len(obs)),), device=model.device)
         mean, _ = model.distribution_parameters(features[ids], prepared=True)
-        loss = (mean.tanh() - labels[ids]).square().mean()
+        actions = mean.tanh()
+        imitation_loss = (actions - labels[ids]).square().mean()
+        anchor_loss = (actions - reference[ids]).square().mean() if reference is not None else actions.new_zeros(())
+        loss = imitation_loss + anchor_weight * anchor_loss
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError('Nonfinite full-observation imitation loss')
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.actor.parameters(), 0.5, error_if_nonfinite=True)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.actor.parameters(), 0.5, error_if_nonfinite=True)
         opt.step()
         loss_value = float(loss.detach())
+        if on_update is not None:
+            on_update(update, dict(loss=loss_value, imitation_loss=float(imitation_loss.detach()),
+                                   anchor_loss=float(anchor_loss.detach()), grad_norm=float(grad_norm)))
     return dict(updates=updates, loss=loss_value, samples=len(obs))
 
 

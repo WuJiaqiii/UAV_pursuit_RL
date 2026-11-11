@@ -80,6 +80,9 @@ def evaluate(
                             env.plant.target.pos[:k].cpu().clone(),
                             action[:k].cpu().clone(),
                             active[:k].cpu().clone(),
+                            env.plant.pursuer.rot[:k].cpu().clone(),
+                            env.plant.pursuer.rate[:k].cpu().clone(),
+                            env.plant.pursuer.thrust[:k].cpu().clone(),
                         )
                     )
                 (obs, priv), reward, done, _, completed = env.step(action, raw)
@@ -134,6 +137,9 @@ def evaluate(
                     target=np.stack([x[2].numpy() for x in trace]),
                     action=np.stack([x[3].numpy() for x in trace]),
                     active=np.stack([x[4].numpy() for x in trace]),
+                    rotation=np.stack([x[5].numpy() for x in trace]),
+                    body_rate=np.stack([x[6].numpy() for x in trace]),
+                    thrust=np.stack([x[7].numpy() for x in trace]),
                 )
     records.sort(key=lambda r: r["episode"])
     if len(records) != episodes or len({r["episode"] for r in records}) != episodes:
