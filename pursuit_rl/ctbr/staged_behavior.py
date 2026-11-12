@@ -7,10 +7,11 @@ from pathlib import Path
 
 import torch
 
-from .behavior import acceptable, collect, fit, reports
+from .behavior import acceptable, collect, fit, policy_action, reports, scan
 from .checkpoint import load as load_model, save, source_fingerprint, write_json
 from .config import interface, load
 from .diagnostics import profiles
+from .environment import CTBRBatch
 from .evaluation import evaluate
 
 
@@ -20,6 +21,49 @@ def actions(model, observations):
         model.distribution_parameters(batch)[0].tanh().cpu()
         for batch in observations.split(2048)
     ])
+
+
+def collect_arm(model, tasks, args):
+    mixed, mixed_info = collect(model, tasks['mixed'], args.episodes, 710042, stride=5)
+    budget = args.samples
+    if budget is None and args.data_mix == 'mixed':
+        return mixed, dict(samples=len(mixed[0]), sources={'mixed': mixed_info})
+    if budget is None or budget < 12 or budget % 12:
+        raise ValueError('Matched comparisons require --samples divisible by 12')
+    chunks, sources = [], {}
+
+    def add(name, data, info, count, seed):
+        available = len(data[0])
+        if available < count:
+            raise ValueError(f'{name}: collected {available} samples for quota {count}; increase rollout episodes')
+        rng = torch.Generator().manual_seed(seed)
+        indices = torch.randperm(available, generator=rng)[:count].to(data[0].device)
+        chunks.append(tuple(t[indices] for t in data))
+        sources[name] = dict(info, quota=count, subsample_seed=seed)
+
+    add('mixed', mixed, mixed_info, budget if args.data_mix == 'mixed' else budget // 2, 800)
+    if args.data_mix != 'mixed':
+        for index, task in enumerate(('cruise_0.5', 'cruise_1', 'cruise_2')):
+            cruise, info = collect(model, tasks[task], args.cruise_episodes, 720042+index*1000, stride=5)
+            add(task, cruise, info, budget // (6 if args.data_mix == 'cruise' else 12), 801+index)
+            if args.data_mix == 'near_zero':
+                near, info = collect(model, tasks[task], args.cruise_episodes,
+                                     720042+index*1000, stride=5,
+                                     teacher_rollout=True, max_label_distance=0.2)
+                add(task+'_teacher_near', near, info, budget // 12, 901+index)
+    return tuple(torch.cat([chunk[i] for chunk in chunks]) for i in range(2)), dict(
+        samples=budget, sources=sources)
+
+
+@torch.no_grad()
+def baseline_probe(model, task):
+    env = CTBRBatch(dict(task, num_envs=8), seed=710042)
+    ticks = min(round(35 / env.decision_dt), env.max_decision_steps - 1)
+    for _ in range(ticks):
+        env.step(*policy_action(model, env))
+    obs, priv = env.observe()
+    digest = hashlib.sha256(priv.cpu().contiguous().numpy().tobytes()).hexdigest()
+    return env, digest, ticks * env.decision_dt
 
 
 def run(args):
@@ -52,7 +96,8 @@ def run(args):
         validation_seeds=seeds, source_fingerprint=source_fingerprint(),
         torch_version=str(torch.__version__),
         checkpoint_sha256=hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()))
-    data, collection = collect(model, tasks['mixed'], args.episodes, 710042, stride=5)
+    data, collection = collect_arm(model, tasks, args)
+    probe_env, probe_digest, probe_time = baseline_probe(model, tasks['cruise_1'])
     torch.save(tuple(t.cpu() for t in data), root / 'training_samples.pt')
     write_json(root / 'collection.json', collection)
     fixed = {}
@@ -71,6 +116,9 @@ def run(args):
         directory.mkdir()
         save(directory / 'candidate.pt', model, tasks['mixed'],
              dict(progress, behavior_updates=update), 'staged_behavior_candidate')
+        write_json(directory / 'shared_probe.json', dict(
+            initial_state_digest=probe_digest, start_time_s=probe_time, horizon_s=0.3,
+            rows=scan(model, probe_env, [-0.5, 0, 0.5], 0.3)))
         screening = {}
         for name, task in screen.items():
             report, _ = evaluate(model, task, args.screen_episodes, seeds[0],
@@ -134,6 +182,9 @@ def main():
     parser.add_argument('--milestones', type=int, nargs='+', default=[10, 25, 50, 100])
     parser.add_argument('--lr', type=float, default=3e-5)
     parser.add_argument('--anchor-weight', type=float, default=0)
+    parser.add_argument('--data-mix', choices=['mixed', 'cruise', 'near_zero'], default='mixed')
+    parser.add_argument('--samples', type=int)
+    parser.add_argument('--cruise-episodes', type=int, default=8)
     args = parser.parse_args()
     torch.set_num_threads(1)
     run(args)

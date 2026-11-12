@@ -60,8 +60,8 @@ def scan(model, env, offsets, horizon=0.3):
 
 
 @torch.no_grad()
-def collect(model, config, episodes, seed, stride=5):
-    """Complete policy rollouts; teacher labels never control the behavior."""
+def collect(model, config, episodes, seed, stride=5, *, teacher_rollout=False, max_label_distance=None):
+    """Collect labeled states from complete policy or teacher rollouts."""
     states, labels, records = [], [], []
     interactions = 0
     for start in range(0, episodes, config['num_envs']):
@@ -69,10 +69,14 @@ def collect(model, config, episodes, seed, stride=5):
         for tick in range(env.max_decision_steps):
             active = ~env.finished
             obs, _ = env.observe()
-            if tick % stride == 0 and bool(active.any()):
-                states.append(obs[active].clone())
-                labels.append(teacher(env)[active].clone())
-            action, raw = policy_action(model, env)
+            eligible = active
+            if max_label_distance is not None:
+                distance = torch.linalg.vector_norm(env.plant.target.pos - env.plant.pursuer.pos, dim=1)
+                eligible = active & (distance <= max_label_distance)
+            if tick % stride == 0 and bool(eligible.any()):
+                states.append(obs[eligible].clone())
+                labels.append(teacher(env)[eligible].clone())
+            action, raw = (teacher(env), None) if teacher_rollout else policy_action(model, env)
             _, _, _, _, completed = env.step(action, raw)
             records.extend(completed)
             interactions += env.last_physics_steps
@@ -80,6 +84,8 @@ def collect(model, config, episodes, seed, stride=5):
                 break
     if len(records) != episodes:
         raise RuntimeError('Incomplete collection')
+    if not states:
+        raise ValueError('No rollout states satisfied the sampling criteria')
     return (torch.cat(states), torch.cat(labels)), dict(
         episodes=episodes, samples=sum(len(x) for x in states), physics_steps=interactions,
         successes=sum(r['success'] for r in records))
