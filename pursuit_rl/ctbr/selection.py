@@ -7,6 +7,8 @@ def passed(report, config, minimum_success=None):
         if minimum_success is None
         else minimum_success
     )
+    if config["task"].get("objective", "sustained") == "first_entry":
+        return report["success_rate"] >= minimum
     error = report["mean_tail_position_rmse"]
     return (
         report["success_rate"] >= minimum
