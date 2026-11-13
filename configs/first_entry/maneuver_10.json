@@ -1,0 +1,29 @@
+{
+  "task": {
+    "name": "first_entry_maneuver_10",
+    "objective": "first_entry",
+    "kind": "maneuver",
+    "duration": 12,
+    "distance": [
+      1,
+      2
+    ],
+    "speed": [
+      1,
+      1
+    ],
+    "radius": 0.5,
+    "initial_tilt_deg": 0,
+    "initial_velocity_noise": 0,
+    "match_initial_velocity": true,
+    "randomization": 0,
+    "max_accel": 0.75
+  },
+  "training": {
+    "bc_updates": 0,
+    "dagger_rounds": 0,
+    "transfer_dagger_updates": 0,
+    "prediction_updates_enabled": false,
+    "physics_steps": 4000000
+  }
+}

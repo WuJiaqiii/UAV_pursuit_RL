@@ -41,6 +41,7 @@ def parser():
         help="Geometric controller only; never mixes actions",
     )
     e.add_argument("--trace-dir")
+    e.add_argument("--trace-count", type=int, default=2)
     e.add_argument("--num-envs", type=int)
     q = commands.add_parser("curriculum")
     q.add_argument("--plan", default="configs/ctbr/plan.json")
@@ -115,6 +116,8 @@ def execute(argv=None):
         if args.num_envs < 1:
             raise ValueError("num-envs must be positive")
         c["num_envs"] = args.num_envs
+    if args.trace_count < 1:
+        raise ValueError("--trace-count must be positive")
     report, _ = evaluate(
         model,
         c,
@@ -123,6 +126,7 @@ def execute(argv=None):
         args.stochastic,
         reference=args.reference,
         trace_dir=args.trace_dir,
+        trace_count=args.trace_count,
     )
     if saved is not None:
         report.update(
