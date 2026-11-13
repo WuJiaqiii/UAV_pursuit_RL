@@ -52,6 +52,7 @@ def evaluate(
             block_reward = torch.zeros(count, device=env.device)
             length = 0
             trace = []
+            terminal_frames = []
             forecast = (
                 PredictionMetrics(model, env.decision_dt)
                 if model is not None and model.predictor is not None
@@ -99,6 +100,14 @@ def evaluate(
                         length = 0
                 for rec in completed:
                     slot = rec["slot"]
+                    if trace_dir is not None and start == 0 and slot < trace_count:
+                        terminal_frames.append((
+                            slot,
+                            rec["time"],
+                            rec["reason"],
+                            env.plant.pursuer.pos[slot].cpu().tolist(),
+                            env.plant.target.pos[slot].cpu().tolist(),
+                        ))
                     rec = dict(
                         rec,
                         episode=start + slot,
@@ -133,6 +142,12 @@ def evaluate(
                 np.savez_compressed(
                     directory / f"trace_seed_{seed}.npz",
                     time=np.array([x[0] for x in trace]),
+                    radius_m=np.array(c["task"]["radius"]),
+                    terminal_slot=np.array([x[0] for x in terminal_frames], dtype=int),
+                    terminal_time=np.array([x[1] for x in terminal_frames]),
+                    terminal_reason=np.array([x[2] for x in terminal_frames], dtype=str),
+                    terminal_pursuer=np.array([x[3] for x in terminal_frames]),
+                    terminal_target=np.array([x[4] for x in terminal_frames]),
                     pursuer=np.stack([x[1].numpy() for x in trace]),
                     target=np.stack([x[2].numpy() for x in trace]),
                     action=np.stack([x[3].numpy() for x in trace]),
