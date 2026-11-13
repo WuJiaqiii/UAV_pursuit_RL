@@ -1,5 +1,6 @@
 """Compare cumulative imitation updates with fixed states and paired rollouts."""
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -10,6 +11,7 @@ import torch
 from .behavior import acceptable, collect, fit, policy_action, reports, scan
 from .checkpoint import load as load_model, save, source_fingerprint, write_json
 from .config import interface, load
+from .control import teacher
 from .diagnostics import profiles
 from .environment import CTBRBatch
 from .evaluation import evaluate
@@ -23,6 +25,66 @@ def actions(model, observations):
     ])
 
 
+@torch.no_grad()
+def recovery_buckets(model, task, episodes, seed):
+    """Branch from A at two late times and label teacher recovery."""
+    env = CTBRBatch(dict(task, num_envs=episodes), seed=seed)
+    snapshots = sorted({round(env.max_decision_steps * fraction) for fraction in (0.75, 0.85)})
+    horizon = round(0.8 / env.decision_dt)
+    if horizon < 2 or snapshots[-1] + horizon > env.max_decision_steps:
+        raise ValueError('Cruise duration must allow a full 0.8 s recovery after the late snapshot')
+    buckets = {(gap, phase): ([], [], []) for gap in (0.3, 0.5, 0.8) for phase in (0, 1)}
+    tick = 0
+    for snapshot in snapshots:
+        while tick < snapshot:
+            env.step(*policy_action(model, env))
+            tick += 1
+        target_v = env.plant.target.vel.float()
+        direction = torch.nn.functional.normalize(target_v, dim=1)
+        rel_v = ((target_v - env.plant.pursuer.vel) * direction).sum(1)
+        eligible = (~env.finished) & (rel_v.abs() <= 0.1)
+        error = (env.plant.target.pos - env.plant.pursuer.pos).float()
+        lag = (error * direction).sum(1)
+        lateral = (error - lag[:, None] * direction).norm(dim=1)
+        for gap in (0.3, 0.5, 0.8):
+            branch = copy.deepcopy(env)
+            branch.plant.pursuer.pos += (lag - gap)[:, None] * direction
+            initial_velocity = branch.plant.pursuer.vel.clone()
+            initial_position = branch.plant.pursuer.pos.clone()
+            initial_target = branch.plant.target.pos.clone()
+            terminal = {}
+            collected = []
+            for step in range(horizon):
+                slots = (eligible & ~branch.finished).nonzero(as_tuple=True)[0]
+                obs, _ = branch.observe()
+                label = teacher(branch)
+                if len(slots):
+                    phase = int(step >= horizon // 2)
+                    xs, ys, metadata = buckets[gap, phase]
+                    xs.append(obs[slots].clone())
+                    ys.append(label[slots].clone())
+                    for slot in slots.tolist():
+                        record = dict(snapshot_tick=snapshot, slot=slot, recovery_tick=step,
+                                      initial_lag_m=float(lag[slot]), imposed_lag_m=gap,
+                                      position_shift_m=float(lag[slot]-gap),
+                                      lateral_error_m=float(lateral[slot]),
+                                      initial_relative_velocity_mps=float(rel_v[slot]))
+                        metadata.append(record)
+                        collected.append(record)
+                _, _, _, _, completed = branch.step(label)
+                for row in completed:
+                    terminal[row['slot']] = row['reason']
+            dv = ((branch.plant.pursuer.vel-initial_velocity)*direction).sum(1)
+            closure = (((branch.plant.pursuer.pos-initial_position)
+                        -(branch.plant.target.pos-initial_target))*direction).sum(1)
+            for record in collected:
+                slot = record['slot']
+                record.update(terminal_reason=terminal.get(slot),
+                              teacher_speed_change_mps=float(dv[slot]),
+                              teacher_closure_m=float(closure[slot]))
+    return buckets
+
+
 def collect_arm(model, tasks, args):
     mixed, mixed_info = collect(model, tasks['mixed'], args.episodes, 710042, stride=5)
     budget = args.samples
@@ -30,6 +92,8 @@ def collect_arm(model, tasks, args):
         return mixed, dict(samples=len(mixed[0]), sources={'mixed': mixed_info})
     if budget is None or budget < 12 or budget % 12:
         raise ValueError('Matched comparisons require --samples divisible by 12')
+    if args.data_mix == 'recovery' and budget % 144:
+        raise ValueError('Recovery comparisons require --samples divisible by 144')
     chunks, sources = [], {}
 
     def add(name, data, info, count, seed):
@@ -39,18 +103,31 @@ def collect_arm(model, tasks, args):
         rng = torch.Generator().manual_seed(seed)
         indices = torch.randperm(available, generator=rng)[:count].to(data[0].device)
         chunks.append(tuple(t[indices] for t in data))
-        sources[name] = dict(info, quota=count, subsample_seed=seed)
+        info = dict(info)
+        rows = info.pop('rows', None)
+        sources[name] = dict(info, quota=count, subsample_seed=seed, indices=indices.tolist())
+        if rows is not None:
+            sources[name]['selected_rows'] = [rows[i] for i in sources[name]['indices']]
 
     add('mixed', mixed, mixed_info, budget if args.data_mix == 'mixed' else budget // 2, 800)
     if args.data_mix != 'mixed':
         for index, task in enumerate(('cruise_0.5', 'cruise_1', 'cruise_2')):
             cruise, info = collect(model, tasks[task], args.cruise_episodes, 720042+index*1000, stride=5)
             add(task, cruise, info, budget // (6 if args.data_mix == 'cruise' else 12), 801+index)
-            if args.data_mix == 'near_zero':
+            if args.data_mix in ('near_zero', 'recovery'):
                 near, info = collect(model, tasks[task], args.cruise_episodes,
                                      720042+index*1000, stride=5,
                                      teacher_rollout=True, max_label_distance=0.2)
-                add(task+'_teacher_near', near, info, budget // 12, 901+index)
+                near_quota = budget // (24 if args.data_mix == 'recovery' else 12)
+                add(task+'_teacher_near', near, info, near_quota, 901+index)
+                if args.data_mix == 'recovery':
+                    buckets = recovery_buckets(model, tasks[task], args.recovery_episodes, 740042+index*1000)
+                    for bucket, ((gap, phase), (xs, ys, rows)) in enumerate(buckets.items()):
+                        name = f'{task}_recovery_{gap}_phase{phase}'
+                        if not xs:
+                            raise ValueError(f'{name}: no eligible recovery states; increase --recovery-episodes')
+                        add(name, (torch.cat(xs), torch.cat(ys)), dict(rows=rows, available=len(rows)),
+                            budget // 144, 1001+index*10+bucket)
     return tuple(torch.cat([chunk[i] for chunk in chunks]) for i in range(2)), dict(
         samples=budget, sources=sources)
 
@@ -71,6 +148,8 @@ def run(args):
         raise ValueError('Milestones must be positive and strictly increasing')
     if min(args.episodes, args.screen_episodes, args.num_envs, args.validation_episodes) < 1:
         raise ValueError('Episode and environment counts must be positive')
+    if min(args.cruise_episodes, args.recovery_episodes) < 1:
+        raise ValueError('Collection episode counts must be positive')
     if not math.isfinite(args.lr) or args.lr <= 0:
         raise ValueError('Learning rate must be finite and positive')
     if not math.isfinite(args.anchor_weight) or args.anchor_weight < 0:
@@ -134,7 +213,8 @@ def run(args):
                 change_rmse=(predicted-baseline).square().mean(0).sqrt().tolist())
         write_json(directory / 'screening.json', screening)
         results.append(dict(update=update, tasks={
-            name: dict(success_rate=r['success_rate'], rmse=r['mean_tail_position_rmse'])
+            name: dict(success_rate=r['success_rate'], rmse=r['mean_tail_position_rmse'],
+                       joint_precision=r['joint_precision_success_rate'])
             for name, r in screening.items()}))
         write_json(root / 'screening_summary.json', results)
 
@@ -157,7 +237,9 @@ def run(args):
         and r['tasks'][k]['rmse'] is not None for k in screen)]
     selected = None
     if stable:
-        best = min(stable, key=lambda r: (r['tasks']['cruise_1']['rmse'], r['update']))
+        best = min(stable, key=lambda r: (
+            -r['tasks']['cruise_1']['joint_precision'] if args.rank_by_precision else 0,
+            r['tasks']['cruise_1']['rmse'], r['update']))
         path = root / f"update_{best['update']:04d}" / 'candidate.pt'
         candidate, _, _ = load_model(path, args.device)
         validation = reports(candidate, tasks, args.validation_episodes, seeds)
@@ -182,9 +264,11 @@ def main():
     parser.add_argument('--milestones', type=int, nargs='+', default=[10, 25, 50, 100])
     parser.add_argument('--lr', type=float, default=3e-5)
     parser.add_argument('--anchor-weight', type=float, default=0)
-    parser.add_argument('--data-mix', choices=['mixed', 'cruise', 'near_zero'], default='mixed')
+    parser.add_argument('--data-mix', choices=['mixed', 'cruise', 'near_zero', 'recovery'], default='mixed')
     parser.add_argument('--samples', type=int)
     parser.add_argument('--cruise-episodes', type=int, default=8)
+    parser.add_argument('--recovery-episodes', type=int, default=12)
+    parser.add_argument('--rank-by-precision', action='store_true')
     args = parser.parse_args()
     torch.set_num_threads(1)
     run(args)
