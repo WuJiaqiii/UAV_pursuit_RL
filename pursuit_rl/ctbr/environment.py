@@ -505,7 +505,11 @@ class CTBRBatch:
         # controller success; well-configured curriculum bounds avoid this case.
         invalid = ~valid_target
         within = distance <= c["radius"]
-        acquired = (self.first_acquisition < 0) & within & active
+        first_entry = c.get("objective", "sustained") == "first_entry"
+        safe_entry = within & ~failure & ~invalid
+        acquired = (self.first_acquisition < 0) & active & (
+            safe_entry if first_entry else within
+        )
         self.first_acquisition = torch.where(
             acquired, self.steps.float() * self.dt, self.first_acquisition
         )
@@ -525,20 +529,21 @@ class CTBRBatch:
         self.ticks += active.float()
         self.sum_p2 += torch.where(active, distance.square(), 0.0)
         self.sum_v2 += torch.where(active, v_error.square(), 0.0)
-        tail = active & (self.steps > self.max_steps - self.tail_steps)
-        self.tail_count += tail.float()
-        self.tail_good += (tail & within).float()
-        error = (t.pos - u.pos).float()
-        velocity = t.vel.float()
-        self.tail_axis_p2 += torch.where(tail[:, None], error.square(), 0.0)
-        self.tail_axis_error += torch.where(tail[:, None], error, 0.0)
-        speed2 = velocity.square().sum(1)
-        moving_tail = tail & (speed2 >= 0.2 ** 2)
-        projection = (error * velocity).sum(1) / speed2.clamp_min(0.2 ** 2)
-        self.tail_projection += torch.where(moving_tail, projection, 0.0)
-        self.tail_projection_count += moving_tail.float()
-        self.tail_p2 += torch.where(tail, distance.square(), 0.0)
-        self.tail_v2 += torch.where(tail, v_error.square(), 0.0)
+        if not first_entry:
+            tail = active & (self.steps > self.max_steps - self.tail_steps)
+            self.tail_count += tail.float()
+            self.tail_good += (tail & within).float()
+            error = (t.pos - u.pos).float()
+            velocity = t.vel.float()
+            self.tail_axis_p2 += torch.where(tail[:, None], error.square(), 0.0)
+            self.tail_axis_error += torch.where(tail[:, None], error, 0.0)
+            speed2 = velocity.square().sum(1)
+            moving_tail = tail & (speed2 >= 0.2 ** 2)
+            projection = (error * velocity).sum(1) / speed2.clamp_min(0.2 ** 2)
+            self.tail_projection += torch.where(moving_tail, projection, 0.0)
+            self.tail_projection_count += moving_tail.float()
+            self.tail_p2 += torch.where(tail, distance.square(), 0.0)
+            self.tail_v2 += torch.where(tail, v_error.square(), 0.0)
         self.sat_count += (active & (action.abs() > 0.98).any(1)).float()
         for name, value in [
             ("maximum_target_speed", norm(t.vel)),
@@ -563,25 +568,35 @@ class CTBRBatch:
             & (self.tail_good / count >= c["minimum_tail_fraction"])
             & (torch.sqrt(self.tail_v2 / count) <= c["velocity_tolerance"])
         )
-        done = active & (failure | deadline | invalid)
+        if first_entry:
+            success = active & safe_entry
+        done = active & (failure | deadline | invalid | success)
+        penalize = failure | invalid
+        if first_entry:
+            penalize = penalize | (deadline & ~success)
         components = dict(
-            survival=torch.full_like(distance, self.dt * r["survival"]),
-            position=self.dt
-            * r["position"]
-            * torch.exp(-distance / r["position_length"]),
-            relative_velocity=self.dt
-            * r["relative_velocity"]
-            * torch.exp(-v_error / r["velocity_length"]),
             tilt=-self.dt * r["tilt"] * tilt.square(),
             rate=-self.dt
             * r["rate"]
             * (u.rate / self.plant.rate_limits).square().sum(1),
             progress=r["progress"] * (previous - distance),
             action_derivative=-r["action_derivative"] * derivative_cost,
-            acquisition=r["acquisition_bonus"] * acquired.float(),
             completion=r["completion_bonus"] * success.float(),
-            failure=-r["failure"] * (failure | invalid).float(),
+            failure=-r["failure"] * penalize.float(),
         )
+        if not first_entry:
+            # Keep legacy reward order for reproducible sustained-policy evaluation.
+            components = dict(
+                survival=torch.full_like(distance, self.dt * r["survival"]),
+                position=self.dt * r["position"] * torch.exp(-distance / r["position_length"]),
+                relative_velocity=self.dt * r["relative_velocity"]
+                * torch.exp(-v_error / r["velocity_length"]),
+                **components,
+            )
+            completion = components.pop("completion")
+            failure_reward = components.pop("failure")
+            components.update(acquisition=r["acquisition_bonus"] * acquired.float(),
+                              completion=completion, failure=failure_reward)
         self.reward_components = {
             key: torch.where(active, value, 0.0) * r["scale"]
             for key, value in components.items()
@@ -634,13 +649,19 @@ class CTBRBatch:
                             else (
                                 "speed"
                                 if v[2]
-                                else "tilt" if failure[slot] else "tracking_failed"
+                                else "tilt" if failure[slot] else "timeout" if first_entry else "tracking_failed"
                             )
                         )
                     )
                 )
+                entry = (
+                    dict(entry_time_s=v[4] if v[0] else None,
+                         entry_relative_speed_mps=float(v_error[slot]) if v[0] else None)
+                    if first_entry else {}
+                )
                 records.append(
                     dict(
+                        **entry,
                         slot=slot,
                         task=c["name"],
                         success=bool(v[0]),

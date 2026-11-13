@@ -156,6 +156,7 @@ def evaluate(
     def tail_mean(key, population=full_tail):
         return sum(r[key] for r in population) / len(population) if population else None
 
+    first_entry = c["task"].get("objective", "sustained") == "first_entry"
     report = dict(
         schema="pursuit-direct-ctbr-evaluation-v4",
         task=c["task"],
@@ -175,7 +176,11 @@ def evaluate(
             if reference
             else "stochastic" if stochastic else "deterministic"
         ),
-        success_definition="Safe until full deadline; tail within-radius fraction and relative-velocity RMSE pass configured thresholds",
+        success_definition=(
+            "First safe entry into the 3D target sphere at or before deadline"
+            if first_entry else
+            "Safe until full deadline; tail within-radius fraction and relative-velocity RMSE pass configured thresholds"
+        ),
         episodes=episodes,
         successes=sum(r["success"] for r in records),
         success_rate=sum(r["success"] for r in records) / episodes,
@@ -210,7 +215,16 @@ def evaluate(
         ).hexdigest(),
         episodes_detail=records,
     )
-    if c["task"]["kind"] == "cruise":
+    if first_entry:
+        hits = [r for r in records if r["success"]]
+        report.update(
+            entry_radius_m=c["task"]["radius"],
+            mean_entry_time_s=tail_mean("entry_time_s", hits),
+            mean_entry_relative_speed_mps=tail_mean("entry_relative_speed_mps", hits),
+            mean_minimum_distance_m=mean("minimum_distance"),
+        )
+        report["precision_passed"] = None
+    if not first_entry and c["task"]["kind"] == "cruise":
         signed = []
         for r in full_tail:
             velocity = r["start_target_velocity"]
@@ -225,24 +239,25 @@ def evaluate(
             float(torch.quantile(absolute, 0.5)) if signed else None)
         report["tail_abs_along_offset_p90_m"] = (
             float(torch.quantile(absolute, 0.9)) if signed else None)
-    report["joint_precision_success_rate"] = sum(
-        r["success"] and r["tail_complete"]
-        and r["tail_position_rmse"] <= c["task"]["maximum_tail_rmse"]
-        for r in records
-    ) / episodes
-    report["mean_tail_axis_rmse_m"] = (
-        [sum(r["tail_axis_rmse_m"][i] for r in full_tail) / len(full_tail)
-         for i in range(3)] if full_tail else None
-    )
-    report["tail_position_rmse_p95_m"] = (
-        float(torch.quantile(torch.tensor([r["tail_position_rmse"] for r in full_tail]), 0.95))
-        if full_tail else None
-    )
-    report["velocity_projection_definition"] = (
-        "Mean dot(target-pursuer, target_velocity)/speed^2 over tail physics ticks "
-        "with target speed >=0.2 m/s; positive means behind along velocity; "
-        "a geometric proxy, not identified latency. Per-episode values include partial tails."
-    )
+    if not first_entry:
+        report["joint_precision_success_rate"] = sum(
+            r["success"] and r["tail_complete"]
+            and r["tail_position_rmse"] <= c["task"]["maximum_tail_rmse"]
+            for r in records
+        ) / episodes
+        report["mean_tail_axis_rmse_m"] = (
+            [sum(r["tail_axis_rmse_m"][i] for r in full_tail) / len(full_tail)
+             for i in range(3)] if full_tail else None
+        )
+        report["tail_position_rmse_p95_m"] = (
+            float(torch.quantile(torch.tensor([r["tail_position_rmse"] for r in full_tail]), 0.95))
+            if full_tail else None
+        )
+        report["velocity_projection_definition"] = (
+            "Mean dot(target-pursuer, target_velocity)/speed^2 over tail physics ticks "
+            "with target speed >=0.2 m/s; positive means behind along velocity; "
+            "a geometric proxy, not identified latency. Per-episode values include partial tails."
+        )
     if forecast_reports:
         horizons = c["prediction"]["horizons_s"]
         counts = [
@@ -278,6 +293,14 @@ def evaluate(
 
 def score(report):
     records = report["episodes_detail"]
+    if report["task"].get("objective", "sustained") == "first_entry":
+        hits = [r for r in records if r["success"]]
+        safe_fraction = sum(r["reason"] in ("success", "timeout") for r in records) / len(records)
+        error = (
+            sum(r["entry_time_s"] for r in hits) / len(hits)
+            if hits else sum(r["minimum_distance"] for r in records) / len(records)
+        )
+        return (report["success_rate"], safe_fraction, -error)
     completed = sum(
         r["reason"] in ("success", "tracking_failed") for r in records
     ) / len(records)

@@ -1,4 +1,4 @@
-"""Single direct-CTBR CLI. Old entry points are kept in Git history."""
+"""Train and evaluate direct-CTBR pursuit policies."""
 
 import argparse
 import hashlib
@@ -12,8 +12,10 @@ from pursuit_rl.ctbr.training import train
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.curriculum import run
 from pursuit_rl.ctbr.errors import ExperimentGateError
-from pursuit_rl.ctbr.experiments import run as run_experiment
 from pursuit_rl.ctbr.checkpoint import migrate
+
+
+DEFAULT_ENTRY_CONFIG = "configs/first_entry/static.json"
 
 
 def parser():
@@ -21,14 +23,14 @@ def parser():
     p.add_argument("--version", action="version", version="7.0.1")
     commands = p.add_subparsers(dest="command", required=True)
     t = commands.add_parser("train")
-    t.add_argument("--config", required=True)
+    t.add_argument("--config", default=DEFAULT_ENTRY_CONFIG)
     t.add_argument("--out", required=True)
     init = t.add_mutually_exclusive_group()
     init.add_argument("--resume")
     init.add_argument("--init-from")
     t.add_argument("--physics-steps", type=int)
     e = commands.add_parser("evaluate")
-    e.add_argument("--checkpoint", required=True)
+    e.add_argument("--checkpoint", help="Required unless --reference is used")
     e.add_argument("--out", required=True)
     e.add_argument("--config", help="Explicit same-interface task transfer evaluation")
     e.add_argument("--episodes", type=int, default=64)
@@ -55,16 +57,6 @@ def parser():
     m.add_argument("--config", required=True)
     m.add_argument("--out", required=True)
     m.add_argument("--preserve-std", action="store_true")
-    x = commands.add_parser(
-        "experiment", help="Run the paired frozen-A / PPO-B / low-noise-C protocol"
-    )
-    x.add_argument("--plan", default="configs/ctbr_v701/experiment.json")
-    x.add_argument("--source-checkpoint", required=True)
-    x.add_argument("--out", required=True)
-    x.add_argument("--seeds", type=int, nargs="+", default=[42])
-    x.add_argument("--test-episodes", type=int)
-    x.add_argument("--device", default="cpu")
-    x.add_argument("--cpu-threads", type=int, default=1)
     for sub in (t, e, q, m):
         sub.add_argument("--device", default="cpu")
         sub.add_argument("--seed", type=int, default=42)
@@ -75,15 +67,6 @@ def parser():
 def execute(argv=None):
     args = parser().parse_args(argv)
     torch.set_num_threads(args.cpu_threads)
-    if args.command == "experiment":
-        return run_experiment(
-            args.plan,
-            args.source_checkpoint,
-            args.out,
-            args.device,
-            args.seeds,
-            args.test_episodes,
-        )
     if args.command == "migrate":
         _, receipt = migrate(
             args.checkpoint,
@@ -112,8 +95,14 @@ def execute(argv=None):
             args.phases,
             init_from=args.init_from,
         )
-    model, c, saved = checkpoint_load(args.checkpoint, args.device)
-    if args.config:
+    if not args.checkpoint:
+        if not args.reference:
+            raise ValueError("Evaluation requires --checkpoint or --reference")
+        model, saved = None, None
+        c = load(args.config or DEFAULT_ENTRY_CONFIG, args.device, args.seed)
+    else:
+        model, c, saved = checkpoint_load(args.checkpoint, args.device)
+    if args.checkpoint and args.config:
         from pursuit_rl.ctbr.config import interface
 
         requested = load(args.config, args.device, c["seed"])
@@ -135,14 +124,19 @@ def execute(argv=None):
         reference=args.reference,
         trace_dir=args.trace_dir,
     )
-    report.update(
-        checkpoint_sha256=hashlib.sha256(
-            Path(args.checkpoint).read_bytes()
-        ).hexdigest(),
-        checkpoint_origin=saved["origin"],
-        progress=saved["progress"],
-    )
+    if saved is not None:
+        report.update(
+            checkpoint_sha256=hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
+            checkpoint_origin=saved["origin"],
+            progress=saved["progress"],
+        )
     write_json(args.out, report)
+    if c["task"].get("objective", "sustained") == "first_entry":
+        print(
+            f"{report['successes']}/{report['episodes']} safe entries "
+            f"into a {report['entry_radius_m']:g} m sphere"
+        )
+        return report
     error = report["mean_tail_position_rmse"]
     tail = f"{error:.3f} m" if error is not None else "N/A (no complete tail window)"
     print(

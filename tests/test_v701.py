@@ -15,7 +15,6 @@ from pursuit_rl.ctbr.checkpoint import (
 from pursuit_rl.ctbr.environment import CTBRBatch
 from pursuit_rl.ctbr.training import train
 from pursuit_rl.ctbr.curriculum import gate
-from pursuit_rl.ctbr.experiments import run as experiment
 from pursuit_rl.ctbr.evaluation import evaluate
 
 
@@ -175,60 +174,3 @@ def test_qualified_initialization_can_promote_without_ppo(small, tmp_path):
     assert result["promotion_passed"] and result["ppo_updates"] == 0
     assert result["best_feasible_origin"] in ("bc_initial", "bc_dagger_initial")
     assert (tmp_path / "run/checkpoints/best_feasible.pt").exists()
-
-
-def test_experiment_abc_full_pipeline_and_restart(small, tmp_path):
-    source = tmp_path / "v700.pt"
-    legacy_checkpoint(small, source)
-    c = copy.deepcopy(small)
-    c["policy"]["decision_steps"] = 10
-    c["training"].update(
-        physics_steps=320,
-        rollout_steps=8,
-        validation_every=160,
-        bc_updates=0,
-        dagger_rounds=0,
-        transfer_dagger_updates=0,
-        prediction_updates_enabled=False,
-    )
-    c["task"][
-        "maximum_tail_rmse"
-    ] = 1e-8  # Failure to reach precision is a recorded result, not a runtime error.
-    for name, std, budget in [("A", 0.07, 0), ("B", 0.07, 320), ("C", 0.03, 320)]:
-        d = copy.deepcopy(c)
-        d["policy"]["initial_std"] = std
-        d["training"]["physics_steps"] = budget
-        (tmp_path / (name + ".json")).write_text(json.dumps(d))
-    for name in ("hover", "recent"):
-        d = copy.deepcopy(c)
-        d["task"]["name"] = name
-        (tmp_path / (name + ".json")).write_text(json.dumps(d))
-    plan = dict(
-        schema="pursuit-ctbr-experiment-v1",
-        variants={k: k + ".json" for k in "ABC"},
-        evaluation_profiles=dict(near="A.json", hover="hover.json"),
-        retention_tasks=["hover"],
-        replay_profiles=dict(recent="recent.json", anchor="hover.json"),
-        test_episodes=2,
-        stochastic_episodes=2,
-        validation_episodes=2,
-        gate_seed_offsets=[97000, 197000],
-        retention_seed_offsets=[87000, 187000],
-        test_seed_offset=210000,
-        training_validation_seed_offset=470000,
-    )
-    p = tmp_path / "plan.json"
-    p.write_text(json.dumps(plan))
-    # Migration correctly rejects the 1 kHz v700 source. Rebuild the fixture with matching decision timing.
-    legacy_checkpoint(c, source)
-    root = tmp_path / "experiment"
-    result = experiment(p, source, root)
-    assert result["42"]["A"]["local_ppo_updates"] == 0
-    assert result["42"]["B"]["local_ppo_updates"] == 2
-    assert result["42"]["C"]["local_ppo_updates"] == 2
-    assert result["42"]["B"]["role"] == "best_current_not_promoted"
-    assert result == experiment(p, source, root)
-    a, _, _ = restore(root / "seed_42/initializations/A.pt")
-    cc, _, _ = restore(root / "seed_42/initializations/C.pt")
-    assert torch.allclose(a.log_std.exp(), torch.full((4,), 0.07))
-    assert torch.allclose(cc.log_std.exp(), torch.full((4,), 0.03))

@@ -110,6 +110,7 @@ DEFAULT = {
     },
     "task": {
         "name": "hover_small",
+        "objective": "sustained",
         "kind": "hover",
         "duration": 20.0,
         "distance": [0.0, 0.3],
@@ -172,6 +173,11 @@ def validate(c):
         if type(c[key]) is not int or c[key] < (0 if key == "seed" else 1):
             raise ValueError(f"Invalid {key}")
     p, t, tr, policy = c["physics"], c["task"], c["training"], c["policy"]
+    objective = t.get("objective", "sustained")
+    if objective not in ("sustained", "first_entry"):
+        raise ValueError("Unknown task objective")
+    if objective == "first_entry" and t["distance"][0] <= t["radius"]:
+        raise ValueError("First-entry starts must be strictly outside the target sphere")
     if p["dt"] != 0.001 or p["substeps"] != 1:
         raise ValueError("Physics must use 1 ms integration steps")
     if type(policy["decision_steps"]) is not int or policy["decision_steps"] < 1:
