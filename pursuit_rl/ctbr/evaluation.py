@@ -210,6 +210,21 @@ def evaluate(
         ).hexdigest(),
         episodes_detail=records,
     )
+    if c["task"]["kind"] == "cruise":
+        signed = []
+        for r in full_tail:
+            velocity = r["start_target_velocity"]
+            speed = math.sqrt(sum(x*x for x in velocity))
+            if speed >= 0.2:
+                offset = sum(e*v for e, v in zip(r["tail_axis_mean_error_m"], velocity)) / speed
+                r["tail_signed_along_offset_m"] = offset
+                signed.append(offset)
+        absolute = torch.tensor(signed, dtype=torch.float64).abs()
+        report["tail_along_offset_episodes"] = len(signed)
+        report["tail_abs_along_offset_median_m"] = (
+            float(torch.quantile(absolute, 0.5)) if signed else None)
+        report["tail_abs_along_offset_p90_m"] = (
+            float(torch.quantile(absolute, 0.9)) if signed else None)
     report["joint_precision_success_rate"] = sum(
         r["success"] and r["tail_complete"]
         and r["tail_position_rmse"] <= c["task"]["maximum_tail_rmse"]

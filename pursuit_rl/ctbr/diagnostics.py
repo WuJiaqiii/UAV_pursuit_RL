@@ -70,7 +70,9 @@ def run(checkpoints, config, out, episodes=64, seeds=(310042, 410042),
                         tail_rmse=report["mean_tail_position_rmse"],
                         tail_axis_rmse_m=report["mean_tail_axis_rmse_m"],
                         tail_p95_m=report["tail_position_rmse_p95_m"],
-                        full_tail_episodes=report["full_tail_episodes"]))
+                        full_tail_episodes=report["full_tail_episodes"],
+                        tail_abs_along_offset_median_m=report.get("tail_abs_along_offset_median_m"),
+                        tail_abs_along_offset_p90_m=report.get("tail_abs_along_offset_p90_m")))
                     write_json(root / "summary.json", rows)
                     print(rows[-1], flush=True)
     return rows

@@ -15,6 +15,7 @@ from .control import teacher
 from .diagnostics import profiles
 from .environment import CTBRBatch
 from .evaluation import evaluate
+from .trim import set_cruise_trim
 
 
 @torch.no_grad()
@@ -26,14 +27,15 @@ def actions(model, observations):
 
 
 @torch.no_grad()
-def recovery_buckets(model, task, episodes, seed):
+def recovery_buckets(model, task, episodes, seed, *, trim=False):
     """Branch from A at two late times and label teacher recovery."""
     env = CTBRBatch(dict(task, num_envs=episodes), seed=seed)
     snapshots = sorted({round(env.max_decision_steps * fraction) for fraction in (0.75, 0.85)})
     horizon = round(0.8 / env.decision_dt)
     if horizon < 2 or snapshots[-1] + horizon > env.max_decision_steps:
         raise ValueError('Cruise duration must allow a full 0.8 s recovery after the late snapshot')
-    buckets = {(gap, phase): ([], [], []) for gap in (0.3, 0.5, 0.8) for phase in (0, 1)}
+    gaps = (-0.2, 0, 0.2) if trim else (0.3, 0.5, 0.8)
+    buckets = {(gap, phase): ([], [], []) for gap in gaps for phase in (0, 1)}
     tick = 0
     for snapshot in snapshots:
         while tick < snapshot:
@@ -46,9 +48,14 @@ def recovery_buckets(model, task, episodes, seed):
         error = (env.plant.target.pos - env.plant.pursuer.pos).float()
         lag = (error * direction).sum(1)
         lateral = (error - lag[:, None] * direction).norm(dim=1)
-        for gap in (0.3, 0.5, 0.8):
+        for gap in gaps:
             branch = copy.deepcopy(env)
-            branch.plant.pursuer.pos += (lag - gap)[:, None] * direction
+            if trim:
+                set_cruise_trim(branch, gap)
+            else:
+                branch.plant.pursuer.pos += (lag - gap)[:, None] * direction
+            shift = ((branch.plant.pursuer.pos - env.plant.pursuer.pos) * direction).sum(1)
+            actual_relative_velocity = ((target_v - branch.plant.pursuer.vel) * direction).sum(1)
             initial_velocity = branch.plant.pursuer.vel.clone()
             initial_position = branch.plant.pursuer.pos.clone()
             initial_target = branch.plant.target.pos.clone()
@@ -66,9 +73,10 @@ def recovery_buckets(model, task, episodes, seed):
                     for slot in slots.tolist():
                         record = dict(snapshot_tick=snapshot, slot=slot, recovery_tick=step,
                                       initial_lag_m=float(lag[slot]), imposed_lag_m=gap,
-                                      position_shift_m=float(lag[slot]-gap),
-                                      lateral_error_m=float(lateral[slot]),
-                                      initial_relative_velocity_mps=float(rel_v[slot]))
+                                      position_shift_m=float(shift[slot]),
+                                      lateral_error_m=0.0 if trim else float(lateral[slot]),
+                                      initial_relative_velocity_mps=float(actual_relative_velocity[slot]),
+                                      trimmed=trim)
                         metadata.append(record)
                         collected.append(record)
                 _, _, _, _, completed = branch.step(label)
@@ -92,7 +100,8 @@ def collect_arm(model, tasks, args):
         return mixed, dict(samples=len(mixed[0]), sources={'mixed': mixed_info})
     if budget is None or budget < 12 or budget % 12:
         raise ValueError('Matched comparisons require --samples divisible by 12')
-    if args.data_mix == 'recovery' and budget % 144:
+    recovery_arm = args.data_mix in ('recovery', 'trim_recovery')
+    if recovery_arm and budget % 144:
         raise ValueError('Recovery comparisons require --samples divisible by 144')
     chunks, sources = [], {}
 
@@ -114,14 +123,15 @@ def collect_arm(model, tasks, args):
         for index, task in enumerate(('cruise_0.5', 'cruise_1', 'cruise_2')):
             cruise, info = collect(model, tasks[task], args.cruise_episodes, 720042+index*1000, stride=5)
             add(task, cruise, info, budget // (6 if args.data_mix == 'cruise' else 12), 801+index)
-            if args.data_mix in ('near_zero', 'recovery'):
+            if args.data_mix == 'near_zero' or recovery_arm:
                 near, info = collect(model, tasks[task], args.cruise_episodes,
                                      720042+index*1000, stride=5,
                                      teacher_rollout=True, max_label_distance=0.2)
-                near_quota = budget // (24 if args.data_mix == 'recovery' else 12)
+                near_quota = budget // (24 if recovery_arm else 12)
                 add(task+'_teacher_near', near, info, near_quota, 901+index)
-                if args.data_mix == 'recovery':
-                    buckets = recovery_buckets(model, tasks[task], args.recovery_episodes, 740042+index*1000)
+                if recovery_arm:
+                    buckets = recovery_buckets(model, tasks[task], args.recovery_episodes,
+                                               740042+index*1000, trim=args.data_mix == 'trim_recovery')
                     for bucket, ((gap, phase), (xs, ys, rows)) in enumerate(buckets.items()):
                         name = f'{task}_recovery_{gap}_phase{phase}'
                         if not xs:
@@ -264,7 +274,7 @@ def main():
     parser.add_argument('--milestones', type=int, nargs='+', default=[10, 25, 50, 100])
     parser.add_argument('--lr', type=float, default=3e-5)
     parser.add_argument('--anchor-weight', type=float, default=0)
-    parser.add_argument('--data-mix', choices=['mixed', 'cruise', 'near_zero', 'recovery'], default='mixed')
+    parser.add_argument('--data-mix', choices=['mixed', 'cruise', 'near_zero', 'recovery', 'trim_recovery'], default='mixed')
     parser.add_argument('--samples', type=int)
     parser.add_argument('--cruise-episodes', type=int, default=8)
     parser.add_argument('--recovery-episodes', type=int, default=12)
