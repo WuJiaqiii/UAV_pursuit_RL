@@ -1,4 +1,4 @@
-"""Geometric BC/DAgger, MC critic warm-up, teacher-free on-policy PPO."""
+"""Optional geometric BC initialization, MC critic warm-up and on-policy PPO."""
 
 import copy
 import hashlib
@@ -134,18 +134,15 @@ def initialization_validation(model, c, root, progress, label):
         "initialization_validation",
         label=label,
         success_rate=report["success_rate"],
-        tail_rmse=report["mean_tail_position_rmse"],
+        unsafe_entry_rate=report["unsafe_entry_rate"],
         failures=report["failures"],
     )
     return report
 
 
-def train(
-    c, out, resume=None, init_from=None, replay=None, promotion_check=None,
-    actor_init_from=None,
-):
-    if sum(bool(x) for x in (resume, init_from, actor_init_from)) > 1:
-        raise ValueError("resume, init_from and actor_init_from are mutually exclusive")
+def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None):
+    if resume and init_from:
+        raise ValueError("resume and init_from are mutually exclusive")
     root = Path(out).resolve()
     tr = c["training"]
     if resume and Path(resume).resolve().parent.parent != root:
@@ -164,7 +161,6 @@ def train(
         ppo_updates=0,
         bc_updates=0,
         accepted_bc_updates=0,
-        rejected_dagger_rounds=0,
         imitation_physics_steps=0,
         mc_physics_steps=0,
         validation_physics_steps=0,
@@ -229,77 +225,25 @@ def train(
             progress["promotion_passed"] = False
     else:
         model = new_model(c)
-        if init_from or actor_init_from:
-            source = init_from or actor_init_from
-            parent, old, saved = load(source, c["device"])
-            if init_from:
-                if interface(old) != interface(c):
-                    raise ValueError(
-                        "Transfer would change action, observation, dynamics, reward or exploration contract"
-                    )
-                model.load_state_dict(parent.state_dict())
-            else:
-                if (
-                    parent.obs_dim != model.obs_dim
-                    or parent.action_dim != model.action_dim
-                    or parent.base_obs_dim != model.base_obs_dim
-                ):
-                    raise ValueError("Actor-only transfer requires identical observation and action dimensions")
-                model.actor.load_state_dict(parent.actor.state_dict())
-                # Keep the new task's exploration statistics and initialize
-                # its Critic/ValueNorm/optimizer on the new reward and physics.
+        if init_from:
+            parent, old, saved = load(init_from, c["device"])
+            if interface(old) != interface(c):
+                raise ValueError(
+                    "Curriculum transfer must preserve action, observations, dynamics and reward"
+                )
+            model.load_state_dict(parent.state_dict())
             model.critic_policy_match = False
             progress["critic_needs_calibration"] = True
-            progress["parent_physics_steps"] = saved["progress"][
-                "cumulative_ppo_physics_steps"
-            ]
+            progress["parent_physics_steps"] = saved["progress"]["cumulative_ppo_physics_steps"]
             progress["parent"] = dict(
-                path=str(Path(source).resolve()),
-                sha256=hashlib.sha256(Path(source).read_bytes()).hexdigest(),
+                path=str(Path(init_from).resolve()),
+                sha256=hashlib.sha256(Path(init_from).read_bytes()).hexdigest(),
                 origin=saved["origin"],
                 ppo_updates=saved["progress"]["ppo_updates"],
-                critic=(
-                    "warm weights, fresh optimizers + new MC calibration"
-                    if init_from else "new weights, new optimizers + MC warm-up"
-                ),
-                mode="full" if init_from else "actor_only",
-                migration=saved["progress"].get("migration"),
+                critic="warm weights, fresh optimizers + new MC calibration",
             )
-            origin = "transfer_initial" if init_from else "actor_transfer_initial"
+            origin = "transfer_initial"
             del parent
-            if tr["transfer_dagger_updates"]:
-                prior = initialization_validation(
-                    model, c, root, progress, "transfer_before"
-                )
-                actor_before = {
-                    k: v.detach().clone() for k, v in model.actor.state_dict().items()
-                }
-                x, y, interactions = imitation_data(c, model, c["seed"] + 30000)
-                loss = fit_actor(
-                    model, (x, y), tr["transfer_dagger_updates"], tr["batch_size"]
-                )
-                progress["bc_updates"] += tr["transfer_dagger_updates"]
-                progress["imitation_physics_steps"] += interactions
-                candidate = initialization_validation(
-                    model, c, root, progress, "transfer_after"
-                )
-                accepted = improved(candidate, score(prior))
-                if accepted:
-                    origin = "transfer_dagger_initial"
-                    progress["accepted_bc_updates"] += tr["transfer_dagger_updates"]
-                else:
-                    model.actor.load_state_dict(actor_before)
-                    progress["rejected_dagger_rounds"] += 1
-                emit(
-                    root,
-                    "transfer_dagger",
-                    updates=tr["transfer_dagger_updates"],
-                    samples=len(x),
-                    loss=loss,
-                    accepted=accepted,
-                    loss_space="standardized_action_mse",
-                )
-                del x, y
         else:
             origin = "bc_initial" if tr["bc_updates"] else "random_initial"
             # The teacher uses only current kinematics (first 21 features).
@@ -321,42 +265,7 @@ def train(
                     samples=len(x),
                     loss_space="standardized_action_mse",
                 )
-                prior = initialization_validation(model, c, root, progress, "bc")
-                for i in range(tr["dagger_rounds"]):
-                    actor_before = {
-                        k: v.detach().clone()
-                        for k, v in model.actor.state_dict().items()
-                    }
-                    dx, dy, interactions = imitation_data(
-                        c, model, c["seed"] + 20000 + i
-                    )
-                    x = torch.cat((x, dx))
-                    y = torch.cat((y, dy))
-                    loss = fit_actor(
-                        model, (x, y), tr["dagger_updates"], tr["batch_size"]
-                    )
-                    progress["bc_updates"] += tr["dagger_updates"]
-                    progress["imitation_physics_steps"] += interactions
-                    candidate = initialization_validation(
-                        model, c, root, progress, f"dagger_{i+1}"
-                    )
-                    accepted = improved(candidate, score(prior))
-                    if accepted:
-                        prior = candidate
-                        origin = "bc_dagger_initial"
-                        progress["accepted_bc_updates"] += tr["dagger_updates"]
-                    else:
-                        model.actor.load_state_dict(actor_before)
-                        progress["rejected_dagger_rounds"] += 1
-                    emit(
-                        root,
-                        "dagger",
-                        round=i + 1,
-                        loss=loss,
-                        samples=len(x),
-                        accepted=accepted,
-                        loss_space="standardized_action_mse",
-                    )
+                initialization_validation(model, c, root, progress, "bc")
                 del x, y
         calibration, data = evaluate(
             model,
@@ -416,17 +325,17 @@ def train(
             "initial_validation",
             origin=origin,
             success_rate=initial["success_rate"],
-            tail_rmse=initial["mean_tail_position_rmse"],
+            unsafe_entry_rate=initial["unsafe_entry_rate"],
         )
     if (
-        not (init_from or actor_init_from)
+        not init_from
         and progress["ppo_updates"] == 0
         and progress["parent"] is None
         and tr["bc_updates"]
     ):
         initial = json.loads((root / "initial_validation.json").read_text())
     if (
-        not (init_from or actor_init_from)
+        not init_from
         and progress["ppo_updates"] == 0
         and progress["parent"] is None
         and tr["bc_updates"]
@@ -483,7 +392,7 @@ def train(
             },
         )
         buf.physics = copy.deepcopy(c["physics"])
-        buf.action_semantics = "ctbr-held-v3"
+        buf.action_semantics = "direct-ctbr-first-entry-v1"
         buf.decision_dt = env.decision_dt
         records = []
         rollout_physics_steps = 0
@@ -540,7 +449,6 @@ def train(
                     "speed": 2,
                     "outside": 3,
                     "tilt": 4,
-                    "tracking_failed": 5,
                     "invalid_target": 6,
                     "timeout": 7,
                     "unsafe_entry": 8,
@@ -676,7 +584,7 @@ def train(
                 root,
                 "validation",
                 success_rate=report["success_rate"],
-                tail_rmse=report["mean_tail_position_rmse"],
+                unsafe_entry_rate=report["unsafe_entry_rate"],
                 stochastic_mc_rmse=cal["critic_mc_rmse"],
                 stochastic_bias=cal["critic_bias"],
             )
@@ -717,7 +625,7 @@ def train(
         if progress["promotion_passed"]:
             break
     result = dict(
-        schema="pursuit-direct-ctbr-training-v3",
+        schema="pursuit-first-entry-training-v1",
         **progress,
         total_local_interactions=sum(
             progress[k]
