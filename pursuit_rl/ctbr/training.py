@@ -286,6 +286,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             # The teacher uses only current kinematics (first 21 features).
             with torch.no_grad():
                 model.actor[0].weight[:, 21:] = 0
+                if tr.get("zero_initial_actor_mean", False):
+                    model.actor[-1].weight.zero_()
+                    model.actor[-1].bias.zero_()
             if tr["bc_updates"]:
                 x, y, interactions = imitation_data(c, seed=c["seed"] + 10000)
                 loss = fit_actor(model, (x, y), tr["bc_updates"], tr["batch_size"])

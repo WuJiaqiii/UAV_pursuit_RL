@@ -3,6 +3,7 @@ import json
 import pytest
 import torch
 from pursuit_rl.ctbr.checkpoint import new_model, load as load_model, save
+from pursuit_rl.ctbr.config import fingerprint
 from pursuit_rl.ctbr.training import imitation_data, fit_actor, fit_critic, train
 from pursuit_rl.ctbr.environment import CTBRBatch
 from pursuit_rl.ctbr.evaluation import evaluate
@@ -59,6 +60,21 @@ def zero_actor(model):
     with torch.no_grad():
         for p in model.actor.parameters():
             p.zero_()
+
+
+def test_optional_zero_initial_actor_mean(small, tmp_path):
+    small["training"].update(physics_steps=0, bc_updates=0, critic_updates=0)
+    old = copy.deepcopy(small)
+    old["training"].pop("zero_initial_actor_mean", None)
+    assert fingerprint(old) == fingerprint(small)
+
+    small["training"]["zero_initial_actor_mean"] = True
+    result = train(small, tmp_path / "zero")
+    model, _, _ = load_model(tmp_path / "zero/checkpoints/initial.pt")
+    obs, _ = CTBRBatch(small).observe()
+    assert result["parent"] is None
+    assert torch.count_nonzero(model.predict_tensor(obs)) == 0
+    assert torch.count_nonzero(model.actor[0].weight[:, :21]) > 0
 
 
 def test_degraded_dagger_candidate_is_rejected(small, tmp_path, monkeypatch):

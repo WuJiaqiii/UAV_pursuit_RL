@@ -88,6 +88,7 @@ DEFAULT = {
         "bc_segment_seconds": 0.5,
         "initialization_episodes": 32,
         "initialization_success_floor": 0.9,
+        "zero_initial_actor_mean": False,
         "save_every_updates": 1,
         "transfer_dagger_updates": 0,
         "prediction_updates_enabled": True,
@@ -286,6 +287,7 @@ def validate(c):
         raise ValueError("Invalid initialization segment or success floor")
     if (
         type(tr["prediction_updates_enabled"]) is not bool
+        or type(tr["zero_initial_actor_mean"]) is not bool
         or not 0 <= tr["minimum_success"] <= 1
     ):
         raise ValueError("Invalid predictor update switch or success threshold")
@@ -382,6 +384,9 @@ def load(path=None, device=None, seed=None):
 def fingerprint(c):
     c = copy.deepcopy(c)
     c.pop("device")
+    # An absent switch and its default describe the same historical run.
+    if not c["training"].get("zero_initial_actor_mean", False):
+        c["training"].pop("zero_initial_actor_mean", None)
     return hashlib.sha256(
         json.dumps(c, sort_keys=True, allow_nan=False).encode()
     ).hexdigest()
