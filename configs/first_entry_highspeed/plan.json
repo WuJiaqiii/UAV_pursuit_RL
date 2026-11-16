@@ -1,5 +1,5 @@
 {
-  "schema": "pursuit-direct-ctbr-curriculum-v4",
+  "schema": "pursuit-first-entry-curriculum-v1",
   "prescreen": true,
   "early_promotion": true,
   "gate_seed_offsets": [
@@ -10,8 +10,6 @@
     89000,
     189000
   ],
-  "retention_rmse_relative_budget": 0.2,
-  "retention_rmse_absolute_slack_m": 0.05,
   "phases": [
     {
       "name": "01_static",
