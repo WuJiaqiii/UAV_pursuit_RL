@@ -174,10 +174,36 @@ class CTBRBatch:
         direction[:, 2] *= 0.15
         direction /= norm(direction, True).clamp_min(1e-8)
         distance = self.uniform(*c["distance"], n)
+        encounter = c.get("encounter", "random")
+        target_direction = t.vel.float()
+        target_direction[:, 2] = 0.0
+        speed = norm(target_direction, True)
+        target_direction = torch.where(
+            speed > 1e-5, target_direction / speed.clamp_min(1e-5), direction
+        )
+        if encounter == "tail":
+            direction = target_direction
+        elif encounter == "head_on":
+            direction = -target_direction
         u.pos[mask] = (t.pos - direction * distance[:, None])[mask].float()
         velocity = self.randn(n, 3) * c["initial_velocity_noise"]
-        if c["match_initial_velocity"]:
-            velocity += t.vel
+        init_heading = c.get("initial_pursuer_heading", "legacy")
+        if init_heading == "legacy":
+            if c["match_initial_velocity"]:
+                velocity += t.vel.float()
+        else:
+            if init_heading == "same":
+                heading_direction = target_direction
+            elif init_heading == "opposite":
+                heading_direction = -target_direction
+            else:
+                angle = self.uniform(-math.pi, math.pi, n)
+                heading_direction = torch.stack((
+                    torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)
+                ), 1)
+            velocity += heading_direction * self.uniform(
+                *c.get("initial_pursuer_speed", [0.0, 0.0]), n
+            )[:, None]
         u.vel[mask] = velocity[mask]
         u.acc[mask] = 0
         u.rate[mask] = 0
@@ -201,6 +227,35 @@ class CTBRBatch:
             getattr(u, name)[mask] = (
                 base * (1 + scale * (self.uniform(low, high, n) - 1))
             )[mask]
+        if c.get("trimmed_initialization", False):
+            # Equilibrium for level-altitude cruise with quadratic drag:
+            # F_spec = drag*v*|v| - gravity*NED_vertical.
+            cruise_force = u.drag[:, None] * u.vel * norm(u.vel, True)
+            cruise_force[:, 2] -= p["gravity"]
+            thrust = norm(cruise_force)
+            max_load = p.get("max_load_factor_g")
+            feasible = thrust <= min(
+                p["thrust_max"],
+                float("inf") if max_load is None else max_load * p["gravity"] * u.mass_ratio
+            ) + 1e-4
+            if not bool(feasible[mask].all()):
+                raise ValueError("Trimmed cruise exceeds available load/thrust envelope")
+            b3 = -cruise_force / thrust[:, None].clamp_min(1e-8)
+            travel = u.vel.clone()
+            travel[:, 2] = 0.0
+            heading = travel / norm(travel, True).clamp_min(1e-8)
+            stationary_heading = torch.stack((
+                torch.cos(yaw[:, 2]), torch.sin(yaw[:, 2]), torch.zeros(n, device=self.device)
+            ), 1)
+            heading = torch.where(
+                norm(travel, True) > 1e-5, heading, stationary_heading
+            )
+            b2 = torch.linalg.cross(b3, heading, dim=1)
+            b2 = b2 / norm(b2, True).clamp_min(1e-8)
+            b1 = torch.linalg.cross(b2, b3, dim=1)
+            trimmed_rot = torch.stack((b1, b2, b3), 2)
+            u.rot[mask] = trimmed_rot[mask]
+            u.thrust[mask] = thrust[mask]
         self.command_velocity[mask] = t.vel[mask]
         self.initial_rel_pos[mask] = (t.pos - u.pos)[mask].float()
         self.initial_target_vel[mask] = t.vel[mask].float()
@@ -476,7 +531,8 @@ class CTBRBatch:
         active = ~self.finished
         p, c, r = self.config["physics"], self.config["task"], self.config["reward"]
         u, t = self.plant.pursuer, self.plant.target
-        previous = norm(t.pos - u.pos).float()
+        old_relative = (t.pos - u.pos).float().clone()
+        previous = norm(old_relative).float()
         old_acc = t.acc.clone()
         self.plant.step(action, active)
         self.advance_target(active)
@@ -506,7 +562,26 @@ class CTBRBatch:
         invalid = ~valid_target
         within = distance <= c["radius"]
         first_entry = c.get("objective", "sustained") == "first_entry"
-        safe_entry = within & ~failure & ~invalid
+        # Continuous relative segment check avoids tunneling through a narrow
+        # sphere between 1 ms physics samples at high closing speeds.
+        new_relative = (t.pos - u.pos).float()
+        relative_delta = new_relative - old_relative
+        segment_alpha = (
+            -(old_relative * relative_delta).sum(1)
+            / relative_delta.square().sum(1).clamp_min(1e-12)
+        ).clamp(0.0, 1.0)
+        segment_nearest = norm(
+            old_relative + segment_alpha[:, None] * relative_delta
+        )
+        entered = within | (segment_nearest <= c["radius"])
+        speed_limit = c.get("entry_relative_speed_max_mps")
+        entry_speed_ok = (
+            torch.ones_like(entered)
+            if speed_limit is None
+            else v_error <= speed_limit
+        )
+        unsafe_entry = entered & ~entry_speed_ok & ~failure & ~invalid & first_entry
+        safe_entry = entered & entry_speed_ok & ~failure & ~invalid
         acquired = (self.first_acquisition < 0) & active & (
             safe_entry if first_entry else within
         )
@@ -570,8 +645,8 @@ class CTBRBatch:
         )
         if first_entry:
             success = active & safe_entry
-        done = active & (failure | deadline | invalid | success)
-        penalize = failure | invalid
+        done = active & (failure | deadline | invalid | success | unsafe_entry)
+        penalize = failure | invalid | unsafe_entry
         if first_entry:
             penalize = penalize | (deadline & ~success)
         components = dict(
@@ -584,6 +659,28 @@ class CTBRBatch:
             completion=r["completion_bonus"] * success.float(),
             failure=-r["failure"] * penalize.float(),
         )
+        if first_entry:
+            # The distance-dependent braking penalty is active only if closing
+            # speed exceeds the stopping-speed envelope.
+            radial_closing = (
+                -((t.vel - u.vel).float() * new_relative).sum(1)
+                / distance.clamp_min(1e-6)
+            ).clamp_min(0.0)
+            allowed = torch.sqrt(
+                2.0
+                * c.get("entry_brake_accel_mps2", 8.0)
+                * (distance - c["radius"]).clamp_min(0.0)
+            )
+            scale_v = c.get("entry_velocity_scale_mps", 15.0)
+            braking_error = ((radial_closing - allowed).clamp_min(0.0) / scale_v).square()
+            velocity_error = (v_error / scale_v).square() * torch.exp(
+                -distance / c.get("entry_velocity_distance_m", 5.0)
+            )
+            components.update(
+                braking=-self.dt * r.get("braking", 0.0) * braking_error,
+                entry_velocity=-self.dt * r.get("entry_velocity", 0.0) * velocity_error,
+                time=-self.dt * r.get("time", 0.0) * torch.ones_like(distance),
+            )
         if not first_entry:
             # Keep legacy reward order for reproducible sustained-policy evaluation.
             components = dict(
@@ -649,14 +746,18 @@ class CTBRBatch:
                             else (
                                 "speed"
                                 if v[2]
-                                else "tilt" if failure[slot] else "timeout" if first_entry else "tracking_failed"
+                                else "tilt" if failure[slot] else (
+                            "unsafe_entry" if unsafe_entry[slot] else
+                            "timeout" if first_entry else "tracking_failed"
+                        )
                             )
                         )
                     )
                 )
                 entry = (
                     dict(entry_time_s=v[4] if v[0] else None,
-                         entry_relative_speed_mps=float(v_error[slot]) if v[0] else None)
+                         entry_relative_speed_mps=float(v_error[slot]) if (v[0] or unsafe_entry[slot]) else None,
+                         unsafe_entry=bool(unsafe_entry[slot]))
                     if first_entry else {}
                 )
                 records.append(
