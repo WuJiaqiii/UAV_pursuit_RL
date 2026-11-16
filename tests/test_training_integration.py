@@ -124,3 +124,49 @@ def test_cli_has_no_legacy_migration():
     assert args.plan.endswith("first_entry_highspeed/plan.json")
     with pytest.raises(SystemExit):
         cli.parse_args(["migrate"])
+
+def test_highspeed_tail_full_ppo_update(tmp_path):
+    c = load("configs/first_entry_highspeed/08_high_tail.json")
+    c["num_envs"] = 2
+    c["prediction"]["enabled"] = False
+    c["task"]["duration"] = 0.03
+    c["training"].update(
+        bc_updates=0, critic_updates=0, physics_steps=40,
+        rollout_steps=8, batch_size=8, mc_episodes=2,
+        validation_episodes=2, validation_every=40,
+        mc_calibration_every_updates=0, prediction_updates_enabled=False,
+    )
+    result = train(validate(c), tmp_path / "highspeed_ppo")
+    assert result["ppo_updates"] >= 1
+    assert result["decision_transitions"] >= 2
+
+
+def test_two_stage_first_entry_curriculum_smoke(tmp_path):
+    import json
+    from pursuit_rl.ctbr.curriculum import run
+    c = quick()
+    c["training"]["physics_steps"] = 96
+    c["training"]["minimum_success"] = 0.0
+    phases = []
+    for index in (1, 2):
+        copy_c = __import__("copy").deepcopy(c)
+        name = f"0{index}_smoke"
+        copy_c["task"]["name"] = name
+        copy_c["task"]["distance"] = [0.65 + .1 * (index-1), 0.75 + .1 * (index-1)]
+        (tmp_path / f"{name}.json").write_text(json.dumps(copy_c))
+        phases.append(dict(
+            name=name, profile=f"{name}.json",
+            difficulty_axis="distance", retention_anchor=index == 1,
+        ))
+    plan = dict(
+        schema="pursuit-first-entry-curriculum-v1",
+        prescreen=True, early_promotion=True,
+        gate_seed_offsets=[79000, 179000],
+        retention_seed_offsets=[89000, 189000],
+        phases=phases,
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan))
+    result = run(path, tmp_path / "course", episodes=2, minimum_success=0.0)
+    assert len(result) == 2
+    assert all(r["passed"] for r in result)
