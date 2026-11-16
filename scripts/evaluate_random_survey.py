@@ -26,6 +26,21 @@ class Leg:
     speed: tuple[float, float]
     turn_rate: float
     intervals: tuple[float, float]
+    height_amplitude_m: float = 0.0
+    initial_tilt_deg: float = 0.0
+    paired_horizon_s: int | None = None
+
+    def __post_init__(self):
+        if not (
+            type(self.seconds) is int and 5 <= self.seconds <= 30
+            and len(self.speed) == 2 and 0.3 <= self.speed[0] <= 0.7 <= self.speed[1] <= 1.0
+            and 0 <= self.turn_rate <= 0.5
+            and len(self.intervals) == 2 and 0.7 <= self.intervals[0] <= self.intervals[1] <= 5
+            and 0 <= self.height_amplitude_m <= 0.5
+            and 0 <= self.initial_tilt_deg <= 5
+            and (self.paired_horizon_s is None or self.seconds <= self.paired_horizon_s <= 30)
+        ):
+            raise ValueError("Invalid low-speed survey leg")
 
 
 LEGS = {
@@ -40,8 +55,23 @@ RADIUS = 0.45
 TAIL_RMSE_LIMIT = 0.32
 
 
+def height_profile(time, amplitude, seed, count):
+    """Smooth vertical offsets with zero speed and acceleration at each knot."""
+    rng = np.random.default_rng(seed)
+    interval_s = 4.0
+    knots = np.arange(0, time[-1] + 2 * interval_s, interval_s)
+    levels = rng.uniform(-amplitude, amplitude, size=(len(knots), count))
+    levels[0] = 0
+    index = np.floor(time / interval_s).astype(int)
+    u = ((time - knots[index]) / interval_s)[:, None]
+    change = levels[index + 1] - levels[index]
+    height = levels[index] + change * u**3 * (10 - 15 * u + 6 * u**2)
+    climb = change * 30 * u**2 * (1 - u)**2 / interval_s
+    return height, climb
+
+
 def random_route(leg, seed, dt, initial_positions, initial_velocities):
-    """Draw independent command knots and integrate a smooth horizontal route."""
+    """Draw independent command knots and generate a smooth survey reference."""
     rng = np.random.default_rng(seed)
     time = np.arange(round(leg.seconds / dt) + 1) * dt
     count = len(initial_positions)
@@ -49,7 +79,7 @@ def random_route(leg, seed, dt, initial_positions, initial_velocities):
     yaw_rate = np.empty_like(speed)
     for slot in range(count):
         knot_time = [0.0]
-        while knot_time[-1] < leg.seconds:
+        while knot_time[-1] < (leg.paired_horizon_s or leg.seconds):
             knot_time.append(knot_time[-1] + rng.uniform(*leg.intervals))
         knots = np.asarray(knot_time)
         index = np.minimum(np.searchsorted(knots, time, side="right") - 1, len(knots) - 2)
@@ -72,6 +102,10 @@ def random_route(leg, seed, dt, initial_positions, initial_velocities):
     position[1:] = initial_positions + np.cumsum(
         0.5 * (velocity[:-1] + velocity[1:]) * dt, axis=0
     )
+    if leg.height_amplitude_m:
+        height, climb = height_profile(time, leg.height_amplitude_m, seed + 820000, count)
+        position[:, :, 2] = initial_positions[:, 2] - height
+        velocity[:, :, 2] = -climb
     acceleration = np.zeros_like(velocity)
     acceleration[1:] = np.diff(velocity, axis=0) / dt
     return position, velocity, acceleration
@@ -112,7 +146,7 @@ def configure(base, name, leg):
         tail_seconds=4, radius=RADIUS, velocity_tolerance=0.6,
         minimum_tail_fraction=0.90, maximum_tail_rmse=TAIL_RMSE_LIMIT,
         distance=[0.5, 1.25], speed=[0.7, 0.7], max_accel=0,
-        initial_tilt_deg=0, initial_velocity_noise=0, match_initial_velocity=True,
+        initial_tilt_deg=leg.initial_tilt_deg, initial_velocity_noise=0, match_initial_velocity=True,
         randomization=0,
     )
     return validate(c)
@@ -186,25 +220,38 @@ def draw_pair(out, time, geometry, actor, rows):
         (i for i in range(len(rows)) if i not in eligible),
         key=lambda i: rows[i]["position_rmse_m"],
     )
-    ref = actor[:, slot, 3:6]
+    ref = geometry[:, slot, 3:6]
     geo = geometry[:, slot, :3]
     learned = actor[:, slot, :3]
     origin = ref[0]
     err = [np.linalg.norm(path - ref, axis=1) for path in (geo, learned)]
-    fig, (map_ax, error_ax) = plt.subplots(1, 2, figsize=(8.3, 3.9), layout="constrained")
-    map_ax.plot(ref[:, 1] - origin[1], ref[:, 0] - origin[0], "--", color="#999999",
-                linewidth=1.4, label="Survey reference")
-    map_ax.set(xlabel="East from start (m)", ylabel="North from start (m)", aspect="equal")
-    for arr in (geo, learned):
-        map_ax.update_datalim(np.column_stack((arr[:, 1] - origin[1], arr[:, 0] - origin[0])))
-    map_ax.autoscale_view()
+
+    def east_north_up(path):
+        return (path - origin)[:, [1, 0, 2]] * [1, 1, -1]
+
+    route, geo, learned = (east_north_up(path) for path in (ref, geo, learned))
+    fig = plt.figure(figsize=(10.0, 4.6))
+    panels = fig.add_gridspec(1, 2, left=0.045, right=0.965, top=0.88, bottom=0.14, wspace=0.37)
+    map_ax = fig.add_subplot(panels[0], projection="3d")
+    error_ax = fig.add_subplot(panels[1])
+    map_ax.plot(*route.T, "--", color="#697780", linewidth=1.4, label="Survey reference")
+    bounds = np.concatenate((route, geo, learned), axis=0)
+    for setter, values in zip((map_ax.set_xlim, map_ax.set_ylim, map_ax.set_zlim), bounds.T):
+        center = 0.5 * (values.max() + values.min())
+        half_range = max(0.10, 0.58 * np.ptp(values))
+        setter(center - half_range, center + half_range)
+    map_ax.set(xlabel="East (m)", ylabel="North (m)", zlabel="Relative altitude (m)")
+    map_ax.set_box_aspect((1, 1, 0.64))
+    map_ax.view_init(elev=27, azim=-58)
     error_ax.set(xlabel="Time (s)", ylabel="3D position error (m)",
                  xlim=(0, time[-1]), ylim=(0, max(RADIUS, max(e.max() for e in err)) * 1.10))
-    error_ax.axhline(RADIUS, color="#999999", linestyle="--", linewidth=1)
+    error_ax.axhline(RADIUS, color="#999999", linestyle="--", linewidth=1,
+                     label="0.45 m tolerance")
+    error_ax.legend(loc="upper right", fontsize=8)
     paths, dots, errors = [], [], []
     for name, color in (("Geometric", "#008a85"), ("Actor", "#df6823")):
-        path, = map_ax.plot([], [], color=color, linewidth=1.8, label=name)
-        dot, = map_ax.plot([], [], "o", color=color, markersize=4)
+        path, = map_ax.plot([], [], [], color=color, linewidth=1.8, label=name)
+        dot, = map_ax.plot([], [], [], "o", color=color, markersize=4)
         line, = error_ax.plot([], [], color=color, linewidth=1.5)
         paths.append(path)
         dots.append(dot)
@@ -217,8 +264,8 @@ def draw_pair(out, time, geometry, actor, rows):
     def update(frame):
         for path, dot, line, arr, e in zip(paths, dots, errors, (geo, learned), err):
             end = frame + 1
-            path.set_data(arr[:end, 1] - origin[1], arr[:end, 0] - origin[0])
-            dot.set_data([arr[frame, 1] - origin[1]], [arr[frame, 0] - origin[0]])
+            path.set_data_3d(*arr[:end].T)
+            dot.set_data_3d(*arr[frame:end].T)
             line.set_data(time[:end], e[:end])
         title.set_text(f"{out.stem.replace('_', ' ')} | scene {slot:02d} | {time[frame]:.1f} s")
 
@@ -233,12 +280,24 @@ def draw_pair(out, time, geometry, actor, rows):
 
 def run(args):
     out = args.out
+    legs = LEGS
+    if args.plan:
+        plan = json.loads(args.plan.read_text())
+        if plan.get("schema") != "single-aircraft-survey-v1" or not plan.get("phases"):
+            raise ValueError("Invalid survey curriculum plan")
+        legs = {}
+        for phase in plan["phases"]:
+            name = phase["name"]
+            if name in legs or name in ("", ".", "..") or Path(name).name != name:
+                raise ValueError(f"Invalid or duplicate phase name: {name}")
+            legs[name] = Leg(**phase["leg"])
     out.mkdir(parents=True, exist_ok=True)
     manifest = dict(
         checkpoint=str(args.checkpoint.resolve()),
         checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        legs={name: asdict(leg) for name, leg in LEGS.items()},
+        legs={name: asdict(leg) for name, leg in legs.items()},
+        stop_on_failure=args.stop_on_failure,
         seeds=args.seeds, device=args.device, render_gif=not args.no_gif,
         scenes=args.scenes, minimum_qualified=REQUIRED if args.scenes == SCENES else args.scenes,
     )
@@ -248,7 +307,7 @@ def run(args):
     write_json(receipt, manifest)
     model, base, _ = load(args.checkpoint, args.device)
     results = []
-    for name, leg in LEGS.items():
+    for name, leg in legs.items():
         reports = []
         c = configure(base, name, leg)
         for seed in args.seeds:
@@ -294,7 +353,9 @@ def run(args):
             )
         results.append(result)
         write_json(out / "summary.json", results)
-    return 0 if all(r["controllers"]["actor"]["passed"] for r in results) else 2
+        if args.stop_on_failure and not all(c["passed"] for c in result["controllers"].values()):
+            break
+    return 0 if all(c["passed"] for r in results for c in r["controllers"].values()) else 2
 
 
 def main():
@@ -304,6 +365,8 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--scenes", type=int, choices=(2, SCENES), default=SCENES)
     parser.add_argument("--seeds", type=int, nargs=2, default=SEEDS)
+    parser.add_argument("--plan", type=Path, help="Load a configurable survey curriculum")
+    parser.add_argument("--stop-on-failure", action="store_true")
     parser.add_argument("--no-gif", action="store_true")
     args = parser.parse_args()
     if len(set(args.seeds)) != 2:
