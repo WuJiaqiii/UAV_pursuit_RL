@@ -24,6 +24,7 @@ def test_high_speed_profiles_are_valid_and_share_interface(profile):
     assert c["physics"]["max_load_factor_g"] == pytest.approx(2.5)
     assert c["physics"]["max_speed"] == 60
     assert c["task"]["entry_relative_speed_max_mps"] == 15
+    assert c["training"]["prediction_updates_enabled"]
     env = CTBRBatch(c, n=2, seed=47)
     obs, priv = env.observe()
     assert obs.shape == (2, env.actor_dim)
@@ -179,3 +180,67 @@ def test_reference_method_cli_is_explicit():
         "--out", "runs/unused.json"
     ])
     assert parsed.reference_method == "pn"
+
+
+def test_training_rollout_accepts_unsafe_entry_event(tmp_path, monkeypatch):
+    """A real PPO rollout must not crash when the first crossing is too fast."""
+    from pursuit_rl.ctbr.training import train
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["num_envs"] = 2
+    c["prediction"]["enabled"] = False
+    c["task"].update(duration=0.02, tail_seconds=0.01, distance=[0.55, 0.56])
+    c["policy"]["decision_steps"] = 1
+    c["training"].update(
+        bc_updates=0, critic_updates=0, physics_steps=32, rollout_steps=8,
+        batch_size=8, mc_episodes=2, validation_episodes=2,
+        validation_every=16, mc_calibration_every_updates=0,
+        prediction_updates_enabled=False,
+    )
+    original_reset = CTBRBatch.reset
+
+    def reset_fast(self, mask=None):
+        original_reset(self, mask)
+        if mask is None:
+            mask = torch.ones(self.n, dtype=torch.bool, device=self.device)
+        pursuer, target = self.plant.pursuer, self.plant.target
+        pursuer.pos[mask] = target.pos[mask].float() + pursuer.pos.new_tensor(
+            [0.505, 0.0, 0.0]
+        )
+        pursuer.vel[mask] = pursuer.vel.new_tensor([-17.0, 0.0, 0.0])
+        return self.observe()
+
+    monkeypatch.setattr(CTBRBatch, "reset", reset_fast)
+    result = train(c, tmp_path / "unsafe_rollout")
+    assert result["physics_steps"] >= 32
+
+
+def test_actor_only_transfer_reinitializes_critic(tmp_path):
+    from pursuit_rl.ctbr.checkpoint import new_model, save, load as load_checkpoint
+    from pursuit_rl.ctbr.training import train
+    source = load("configs/first_entry/static.json")
+    source["prediction"]["enabled"] = False
+    source_model = new_model(source)
+    with torch.no_grad():
+        source_model.actor[0].bias.fill_(0.2345)
+    checkpoint = tmp_path / "legacy.pt"
+    save(
+        checkpoint, source_model, source,
+        {"cumulative_ppo_physics_steps": 0, "ppo_updates": 0},
+        "test_source",
+    )
+    target = load("configs/first_entry_highspeed/01_static.json")
+    target["prediction"]["enabled"] = False
+    target["num_envs"] = 1
+    target["task"].update(duration=0.02, tail_seconds=0.01)
+    target["training"].update(
+        bc_updates=0, critic_updates=0, physics_steps=0,
+        mc_episodes=1, validation_episodes=1, prediction_updates_enabled=False,
+    )
+    run_dir = tmp_path / "warmstart"
+    train(target, run_dir, actor_init_from=checkpoint)
+    imported, _, saved = load_checkpoint(run_dir / "checkpoints/initial.pt")
+    assert all(
+        torch.equal(imported.actor.state_dict()[key], value)
+        for key, value in source_model.actor.state_dict().items()
+    )
+    assert saved["progress"]["parent"]["mode"] == "actor_only"
