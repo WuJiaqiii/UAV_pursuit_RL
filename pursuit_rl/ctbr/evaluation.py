@@ -191,6 +191,9 @@ def evaluate(
             if reference
             else "stochastic" if stochastic else "deterministic"
         ),
+        reference_method=(
+            c["training"].get("teacher_method", "pd") if reference else None
+        ),
         success_definition=(
             "First 3D sphere entry with configured relative speed and no physical failure"
             if first_entry else

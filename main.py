@@ -44,6 +44,10 @@ def parser():
         action="store_true",
         help="Geometric controller only; never mixes actions",
     )
+    e.add_argument(
+        "--reference-method", choices=("pd", "pn", "pn_hybrid"),
+        help="Select teacher baseline when evaluating with --reference",
+    )
     e.add_argument("--trace-dir")
     e.add_argument("--trace-count", type=int, default=2)
     e.add_argument("--num-envs", type=int)
@@ -103,6 +107,8 @@ def execute(argv=None):
             args.phases,
             init_from=args.init_from,
         )
+    if args.reference_method and not args.reference:
+        raise ValueError("--reference-method requires --reference")
     if not args.checkpoint:
         if not args.reference:
             raise ValueError("Evaluation requires --checkpoint or --reference")
@@ -125,6 +131,8 @@ def execute(argv=None):
         c["num_envs"] = args.num_envs
     if args.trace_count < 1:
         raise ValueError("--trace-count must be positive")
+    if args.reference_method:
+        c["training"]["teacher_method"] = args.reference_method
     report, _ = evaluate(
         model,
         c,

@@ -49,3 +49,13 @@ Optional first-stage Actor-only warm start from an earlier compatible checkpoint
 python main.py train --config configs/first_entry_highspeed/01_static.json \\
   --actor-init-from runs/legacy/checkpoints/best.pt --out runs/v71_actor_warmstart --device cuda
 ```
+
+## Geometric baseline comparison
+
+Use the same seeds and profile for each baseline:
+```bash
+python main.py evaluate --reference --reference-method pd --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pd_high_tail.json --device cuda
+python main.py evaluate --reference --reference-method pn --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pn_high_tail.json --device cuda
+python main.py evaluate --reference --reference-method pn_hybrid --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pn_hybrid_high_tail.json --device cuda
+```
+The geometry guidance is a reference only and does not blend its commands into the direct-CTBR PPO action.

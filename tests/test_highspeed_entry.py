@@ -170,3 +170,12 @@ def test_pn_brakes_excessive_closing_speed():
     u.vel[0, 0] = 20.0
     acceleration = guidance_acceleration(env)
     assert acceleration[0, 0] < 0, "PN longitudinal feedback must brake excessive closing"
+
+def test_reference_method_cli_is_explicit():
+    from main import parser
+    parsed = parser().parse_args([
+        "evaluate", "--reference", "--reference-method", "pn",
+        "--config", "configs/first_entry_highspeed/01_static.json",
+        "--out", "runs/unused.json"
+    ])
+    assert parsed.reference_method == "pn"
