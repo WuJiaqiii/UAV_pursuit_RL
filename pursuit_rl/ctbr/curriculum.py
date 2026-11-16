@@ -66,7 +66,6 @@ def gate(
             retained.append(item)
             if fail_fast and not item["passed"]:
                 return finish(False, False, "retained_skill_failed")
-    return finish(False, False, "retained_skill_failed")
     return finish(
         all(r["passed"] for r in current) and all(r["passed"] for r in retained)
     )
