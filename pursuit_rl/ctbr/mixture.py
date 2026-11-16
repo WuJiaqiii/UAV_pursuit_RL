@@ -22,6 +22,8 @@ class TaskMixtureBatch:
                 continue
             if interface(profile) != interface(c):
                 raise ValueError("Replay task changes the policy interface")
+            if profile["task"].get("objective", "sustained") != c["task"].get("objective", "sustained"):
+                raise ValueError("Replay cannot mix different terminal objectives without an Actor task identifier")
             env = CTBRBatch(profile, n=size, seed=seed + index * 100003)
             self.groups.append(env)
             name = profile["task"]["name"]
@@ -83,9 +85,15 @@ class TaskMixtureBatch:
             results.append(result)
             start += env.n
         self.last_physics_steps = sum(e.last_physics_steps for e in self.groups)
+        # Diagnostic keys differ across objectives and may be extended by future rewards.
+        # Always concatenate in physical environment order, filling missing keys with zero.
+        keys = sorted(set().union(*(e.reward_components.keys() for e in self.groups)))
         self.reward_components = {
-            key: torch.cat([e.reward_components[key] for e in self.groups])
-            for key in self.groups[0].reward_components
+            key: torch.cat([
+                e.reward_components.get(key, torch.zeros(e.n, device=e.device))
+                for e in self.groups
+            ])
+            for key in keys
         }
         return (
             self.observe(),

@@ -20,6 +20,7 @@ DEFAULT = {
         "hover_thrust": 9.81,
         "thrust_min": 0.0,
         "thrust_max": 30.0,
+        "max_load_factor_g": None,
         "rate_xy": 1.2,
         "rate_yaw": 1.0,
         "tau_thrust": 0.1,
@@ -93,6 +94,11 @@ DEFAULT = {
         "transfer_dagger_updates": 0,
         "prediction_updates_enabled": True,
         "minimum_success": 0.95,
+        "teacher_method": "pd",
+        "teacher_pn_gain": 3.0,
+        "teacher_switch_distance_m": 8.0,
+        "teacher_accel_limit": 8.0,
+        "teacher_tilt_limit_deg": 35.0,
     },
     "reward": {
         "scale": 0.1,
@@ -108,6 +114,9 @@ DEFAULT = {
         "acquisition_bonus": 3.0,
         "failure": 10.0,
         "completion_bonus": 5.0,
+        "braking": 0.0,
+        "entry_velocity": 0.0,
+        "time": 0.0,
     },
     "task": {
         "name": "hover_small",
@@ -131,6 +140,14 @@ DEFAULT = {
         "initial_velocity_noise": 0.1,
         "match_initial_velocity": False,
         "randomization": 0.0,
+        "encounter": "random",
+        "initial_pursuer_heading": "legacy",
+        "initial_pursuer_speed": [0.0, 0.0],
+        "trimmed_initialization": False,
+        "entry_relative_speed_max_mps": None,
+        "entry_brake_accel_mps2": 8.0,
+        "entry_velocity_distance_m": 5.0,
+        "entry_velocity_scale_mps": 15.0,
     },
 }
 KINDS = ("hover", "goto", "cruise", "circle", "maneuver", "random", "random_high")
@@ -179,6 +196,12 @@ def validate(c):
         raise ValueError("Unknown task objective")
     if objective == "first_entry" and t["distance"][0] <= t["radius"]:
         raise ValueError("First-entry starts must be strictly outside the target sphere")
+    load_limit = p.get("max_load_factor_g")
+    if load_limit is not None:
+        if type(load_limit) not in (int, float) or not math.isfinite(load_limit) or load_limit <= 1:
+            raise ValueError("physics.max_load_factor_g must exceed one")
+        if p["thrust_max"] > load_limit * p["gravity"] + 1e-7:
+            raise ValueError("Nominal thrust_max exceeds maximum load factor")
     if p["dt"] != 0.001 or p["substeps"] != 1:
         raise ValueError("Physics must use 1 ms integration steps")
     if type(policy["decision_steps"]) is not int or policy["decision_steps"] < 1:
@@ -277,6 +300,12 @@ def validate(c):
     ):
         if type(tr[k]) is not int or tr[k] < 1:
             raise ValueError(f"Invalid training.{k}")
+    if tr.get("teacher_method", "pd") not in ("pd", "pn", "pn_hybrid"):
+        raise ValueError("Unknown teacher_method")
+    if tr.get("teacher_pn_gain", 3.0) <= 0 or tr.get("teacher_switch_distance_m", 8.0) <= 0:
+        raise ValueError("Invalid PN teacher settings")
+    if tr.get("teacher_accel_limit", 8.0) <= 0 or not 0 < tr.get("teacher_tilt_limit_deg", 35.0) <= p["max_tilt_deg"]:
+        raise ValueError("Invalid teacher acceleration/tilt limits")
     for k in ("actor_lr", "critic_lr", "discount_time_s", "advantage_time_s"):
         if tr[k] <= 0:
             raise ValueError(f"Invalid training.{k}")
@@ -306,6 +335,23 @@ def validate(c):
         raise ValueError("Replay fractions must leave a positive current-task fraction")
     if tr["advantage_time_s"] > tr["discount_time_s"]:
         raise ValueError("GAE lambda would exceed one")
+    if t.get("encounter", "random") not in ("random", "tail", "head_on"):
+        raise ValueError("Invalid task.encounter")
+    if t.get("initial_pursuer_heading", "legacy") not in ("legacy", "same", "opposite", "random"):
+        raise ValueError("Invalid initial pursuer heading")
+    speed_range = t.get("initial_pursuer_speed", [0.0, 0.0])
+    if len(speed_range) != 2 or speed_range[0] < 0 or speed_range[1] < speed_range[0] or speed_range[1] > p["max_speed"]:
+        raise ValueError("Invalid initial pursuer speed range")
+    if type(t.get("trimmed_initialization", False)) is not bool:
+        raise ValueError("Invalid trimmed_initialization")
+    if t.get("trimmed_initialization", False) and t.get("initial_pursuer_heading", "legacy") == "legacy" and not t["match_initial_velocity"]:
+        raise ValueError("Trimmed initialization needs a defined initial velocity")
+    entry_limit = t.get("entry_relative_speed_max_mps")
+    if entry_limit is not None and (type(entry_limit) not in (int, float) or entry_limit <= 0):
+        raise ValueError("Invalid first-entry relative speed limit")
+    for key in ("entry_brake_accel_mps2", "entry_velocity_distance_m", "entry_velocity_scale_mps"):
+        if t.get(key, 1.0) <= 0:
+            raise ValueError(f"Invalid task.{key}")
     for k in ("distance", "speed", "switch_interval"):
         v = t[k]
         if len(v) != 2 or v[0] < 0 or v[1] < v[0]:

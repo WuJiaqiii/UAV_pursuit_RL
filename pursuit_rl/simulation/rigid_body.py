@@ -71,6 +71,13 @@ class BodyBatch:
         }
         h = p["dt"]
         command = thrust_from_action(action[:, 0], p)
+        # The physical load factor is T/(actual mass*g), not simply T/(nominal mass*g).
+        # Enforce the envelope even when episode mass is randomized.
+        if p.get("max_load_factor_g") is not None:
+            command = torch.minimum(
+                command,
+                u.mass_ratio * p["gravity"] * p["max_load_factor_g"],
+            )
         rates = action[:, 1:] * self.rate_limits
         u.rate = u.rate + (rates - u.rate) * (1 - torch.exp(-h / u.tau_rate))[:, None]
         u.thrust = u.thrust + (command - u.thrust) * (1 - torch.exp(-h / u.tau_thrust))
