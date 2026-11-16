@@ -649,12 +649,22 @@ class CTBRBatch:
         penalize = failure | invalid | unsafe_entry
         if first_entry:
             penalize = penalize | (deadline & ~success)
+        # Bounded distance potential avoids an unsafe high-speed crossing
+        # accumulating hundreds of meters of positive progress reward.
+        # Legacy tasks with no speed-limited entry keep their original metric.
+        if first_entry and c.get("entry_relative_speed_max_mps") is not None:
+            length = c.get("entry_velocity_distance_m", 5.0)
+            progress_reward = r["progress"] * (
+                previous / (previous + length) - distance / (distance + length)
+            )
+        else:
+            progress_reward = r["progress"] * (previous - distance)
         components = dict(
             tilt=-self.dt * r["tilt"] * tilt.square(),
             rate=-self.dt
             * r["rate"]
             * (u.rate / self.plant.rate_limits).square().sum(1),
-            progress=r["progress"] * (previous - distance),
+            progress=progress_reward,
             action_derivative=-r["action_derivative"] * derivative_cost,
             completion=r["completion_bonus"] * success.float(),
             failure=-r["failure"] * penalize.float(),
