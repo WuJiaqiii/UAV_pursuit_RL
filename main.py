@@ -12,7 +12,6 @@ from pursuit_rl.ctbr.training import train
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.curriculum import run
 from pursuit_rl.ctbr.errors import ExperimentGateError
-from pursuit_rl.ctbr.checkpoint import migrate
 
 
 DEFAULT_ENTRY_CONFIG = "configs/first_entry_highspeed/01_static.json"
@@ -20,7 +19,7 @@ DEFAULT_ENTRY_CONFIG = "configs/first_entry_highspeed/01_static.json"
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--version", action="version", version="7.1.0")
+    p.add_argument("--version", action="version", version="8.0.0")
     commands = p.add_subparsers(dest="command", required=True)
     t = commands.add_parser("train")
     t.add_argument("--config", default=DEFAULT_ENTRY_CONFIG)
@@ -28,10 +27,6 @@ def parser():
     init = t.add_mutually_exclusive_group()
     init.add_argument("--resume")
     init.add_argument("--init-from")
-    init.add_argument(
-        "--actor-init-from",
-        help="Import compatible Actor weights only; reinitialize Critic and optimizers",
-    )
     t.add_argument("--physics-steps", type=int)
     e = commands.add_parser("evaluate")
     e.add_argument("--checkpoint", help="Required unless --reference is used")
@@ -59,14 +54,7 @@ def parser():
     q.add_argument("--minimum-success", type=float, default=0.95)
     q.add_argument("--phases", nargs="+")
     q.add_argument("--init-from", help="Explicit same-interface v701 initialization")
-    m = commands.add_parser(
-        "migrate", help="Explicitly migrate v700 weights into a new v701 contract"
-    )
-    m.add_argument("--checkpoint", required=True)
-    m.add_argument("--config", required=True)
-    m.add_argument("--out", required=True)
-    m.add_argument("--preserve-std", action="store_true")
-    for sub in (t, e, q, m):
+    for sub in (t, e, q):
         sub.add_argument("--device", default="cpu")
         sub.add_argument("--seed", type=int, default=42)
         sub.add_argument("--cpu-threads", type=int, default=1)
@@ -76,25 +64,13 @@ def parser():
 def execute(argv=None):
     args = parser().parse_args(argv)
     torch.set_num_threads(args.cpu_threads)
-    if args.command == "migrate":
-        _, receipt = migrate(
-            args.checkpoint,
-            load(args.config, args.device, args.seed),
-            args.out,
-            reset_std=not args.preserve_std,
-        )
-        print(json.dumps(receipt, ensure_ascii=False, allow_nan=False))
-        return receipt
     if args.command == "train":
         c = load(args.config, args.device, args.seed)
         if args.physics_steps is not None:
             if args.physics_steps < 0:
                 raise ValueError("Budget must be nonnegative")
             c["training"]["physics_steps"] = args.physics_steps
-        return train(
-            c, args.out, args.resume, args.init_from,
-            actor_init_from=args.actor_init_from,
-        )
+        return train(c, args.out, args.resume, args.init_from)
     if args.command == "curriculum":
         return run(
             args.plan,
@@ -150,17 +126,10 @@ def execute(argv=None):
             progress=saved["progress"],
         )
     write_json(args.out, report)
-    if c["task"].get("objective", "sustained") == "first_entry":
-        print(
-            f"{report['successes']}/{report['episodes']} safe entries "
-            f"into a {report['entry_radius_m']:g} m sphere"
-        )
-        return report
-    error = report["mean_tail_position_rmse"]
-    tail = f"{error:.3f} m" if error is not None else "N/A (no complete tail window)"
     print(
-        f"{report['successes']}/{report['episodes']} sustained successes; tail RMSE {tail}; "
-        f"precision <= {report['precision_rmse_limit_m']:g} m: {'passed' if report['precision_passed'] else 'failed'}"
+        f"{report['successes']}/{report['episodes']} first safe entries "
+        f"(radius={report['entry_radius_m']:g}m, relative-speed limit="
+        f"{report['entry_relative_speed_limit_mps']:g}m/s)"
     )
     return report
 

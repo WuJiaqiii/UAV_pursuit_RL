@@ -22,8 +22,6 @@ class TaskMixtureBatch:
                 continue
             if interface(profile) != interface(c):
                 raise ValueError("Replay task changes the policy interface")
-            if profile["task"].get("objective", "sustained") != c["task"].get("objective", "sustained"):
-                raise ValueError("Replay cannot mix different terminal objectives without an Actor task identifier")
             env = CTBRBatch(profile, n=size, seed=seed + index * 100003)
             self.groups.append(env)
             name = profile["task"]["name"]

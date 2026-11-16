@@ -1,3 +1,3 @@
-"""Direct CTBR sustained-flight PPO curriculum."""
+"""High-speed first-safe-entry CTBR PPO."""
 
-__version__ = "7.1.0"
+__version__ = "8.0.0"
