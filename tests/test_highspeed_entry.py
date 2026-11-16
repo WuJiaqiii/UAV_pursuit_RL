@@ -123,3 +123,37 @@ def test_old_sustained_config_keys_are_rejected():
     c["reward"]["survival"] = 1
     with pytest.raises(ValueError, match="Unknown"):
         merge(copy.deepcopy(DEFAULT), c)
+
+def test_highspeed_rollout_keeps_ctbr_and_observations_finite():
+    from pursuit_rl.ctbr.checkpoint import new_model
+    c = load("configs/first_entry_highspeed/09_high_head_on.json")
+    c["num_envs"] = 4
+    env = CTBRBatch(c, seed=501)
+    model = new_model(c, optimizers=False)
+    obs, critic = env.observe()
+    for _ in range(25):
+        action, raw, _, _ = model.sample_tensor(obs, critic)
+        (obs, critic), reward, _, _, _ = env.step(action, raw)
+        assert torch.isfinite(obs).all() and torch.isfinite(critic).all()
+        assert torch.isfinite(reward).all()
+        assert (action.abs() <= 1).all()
+        assert (env.plant.pursuer.thrust / env.plant.pursuer.mass_ratio / 9.81 <= 2.50001).all()
+
+
+def test_random_highspeed_acceleration_and_jerk_bounds():
+    c = load("configs/first_entry_highspeed/13_extreme_random.json")
+    env = CTBRBatch(c, n=6, seed=18)
+    for _ in range(400):
+        old_acc = env.plant.target.acc.clone()
+        env.advance_target()
+        accel = torch.linalg.vector_norm(env.plant.target.acc, dim=1)
+        jerk = torch.linalg.vector_norm(env.plant.target.acc - old_acc, dim=1) / .001
+        assert (accel <= c["task"]["max_accel"] + 0.2).all()
+        assert (jerk <= c["task"]["jerk_limit"] + 0.2).all()
+
+
+def test_cruise_trim_rejects_physically_unreachable_drag():
+    c = load("configs/first_entry_highspeed/11_extreme_tail.json")
+    c["physics"]["drag"] = 0.02
+    with pytest.raises(ValueError, match="Trimmed cruise"):
+        CTBRBatch(c, n=6, seed=88)
