@@ -1,0 +1,95 @@
+{
+  "schema": "pursuit-direct-ctbr-curriculum-v4",
+  "prescreen": true,
+  "early_promotion": true,
+  "gate_seed_offsets": [
+    79000,
+    179000
+  ],
+  "retention_seed_offsets": [
+    89000,
+    189000
+  ],
+  "retention_rmse_relative_budget": 0.2,
+  "retention_rmse_absolute_slack_m": 0.05,
+  "phases": [
+    {
+      "name": "01_static",
+      "profile": "01_static.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": true
+    },
+    {
+      "name": "02_low_tail",
+      "profile": "02_low_tail.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "03_low_head_on",
+      "profile": "03_low_head_on.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "04_low_random",
+      "profile": "04_low_random.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": true
+    },
+    {
+      "name": "05_medium_tail",
+      "profile": "05_medium_tail.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "06_medium_head_on",
+      "profile": "06_medium_head_on.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "07_medium_random",
+      "profile": "07_medium_random.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": true
+    },
+    {
+      "name": "08_high_tail",
+      "profile": "08_high_tail.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "09_high_head_on",
+      "profile": "09_high_head_on.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "10_high_random",
+      "profile": "10_high_random.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": true
+    },
+    {
+      "name": "11_extreme_tail",
+      "profile": "11_extreme_tail.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "12_extreme_head_on",
+      "profile": "12_extreme_head_on.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": false
+    },
+    {
+      "name": "13_extreme_random",
+      "profile": "13_extreme_random.json",
+      "difficulty_axis": "encounter_speed_distance",
+      "retention_anchor": true
+    }
+  ]
+}

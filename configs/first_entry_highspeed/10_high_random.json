@@ -1,0 +1,78 @@
+{
+  "num_envs": 128,
+  "physics": {
+    "thrust_max": 24.525,
+    "max_load_factor_g": 2.5,
+    "drag": 0.005,
+    "max_speed": 60,
+    "rate_xy": 2.5,
+    "rate_yaw": 1.5,
+    "tau_thrust": 0.065,
+    "tau_rate": 0.06,
+    "workspace_xy": 5000,
+    "max_tilt_deg": 70
+  },
+  "policy": {
+    "position_error_cap_m": 0
+  },
+  "training": {
+    "rollout_steps": 512,
+    "batch_size": 2048,
+    "epochs": 3,
+    "validation_every": 2000000,
+    "validation_episodes": 128,
+    "bc_updates": 0,
+    "dagger_rounds": 0,
+    "transfer_dagger_updates": 0,
+    "prediction_updates_enabled": false,
+    "initialization_success_floor": 0,
+    "teacher_method": "pn_hybrid",
+    "teacher_pn_gain": 3,
+    "teacher_switch_distance_m": 12,
+    "teacher_accel_limit": 16,
+    "teacher_tilt_limit_deg": 65,
+    "physics_steps": 150000000
+  },
+  "reward": {
+    "progress": 0.3,
+    "completion_bonus": 10,
+    "failure": 10,
+    "braking": 0.5,
+    "entry_velocity": 0.5,
+    "time": 0.02,
+    "tilt": 0.08
+  },
+  "task": {
+    "objective": "first_entry",
+    "radius": 0.5,
+    "entry_relative_speed_max_mps": 15,
+    "entry_brake_accel_mps2": 12,
+    "entry_velocity_distance_m": 8,
+    "entry_velocity_scale_mps": 15,
+    "initial_tilt_deg": 0,
+    "initial_velocity_noise": 0,
+    "randomization": 0.05,
+    "match_initial_velocity": false,
+    "trimmed_initialization": true,
+    "encounter": "random",
+    "initial_pursuer_heading": "random",
+    "initial_pursuer_speed": [
+      35,
+      52
+    ],
+    "kind": "random",
+    "max_accel": 3,
+    "speed": [
+      40,
+      45
+    ],
+    "duration": 20,
+    "distance": [
+      100,
+      220
+    ],
+    "name": "10_high_random",
+    "jerk_limit": 20,
+    "response_time_s": 0.4
+  }
+}
