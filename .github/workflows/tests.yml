@@ -1,0 +1,19 @@
+name: Python tests
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: python -m compileall -q pursuit_rl main.py tests
+      - run: pytest -q
