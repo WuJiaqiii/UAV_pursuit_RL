@@ -543,6 +543,7 @@ def train(
                     "tracking_failed": 5,
                     "invalid_target": 6,
                     "timeout": 7,
+                    "unsafe_entry": 8,
                 }[rec["reason"]]
             buf.diagnostic_steps = tick + 1
             records.extend(completed)

@@ -256,6 +256,7 @@ class _DiagnosticBuffer:
                 ("tracking_failed", 5),
                 ("invalid_target", 6),
                 ("timeout", 7),
+                ("unsafe_entry", 8),
             ):
                 mask = self.event_code == code
                 result["events"][label] = {
@@ -341,6 +342,7 @@ class _DiagnosticBuffer:
                 "tracking_failed": 5,
                 "invalid_target": 6,
                 "timeout": 7,
+                "unsafe_entry": 8,
             },
         }
 
