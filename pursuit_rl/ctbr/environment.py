@@ -1,8 +1,4 @@
-"""Sustained pursuit with held CTBR decisions and 1 ms physical integration.
-
-Only physical failure or the finite deadline ends an episode. Acquisition is a
-recorded event, never an early terminal. No target boundary-repulsion force.
-"""
+"""Batched first safe entry: 1 kHz NED dynamics and 100 Hz direct CTBR actions."""
 
 import math
 import torch
@@ -12,7 +8,7 @@ from pursuit_rl.simulation.torch_device import resolve_torch_device
 from .config import KINDS, validate, decision_dt, observation_dims
 from .control import limit
 
-PRIVILEGED_DIM = 44
+PRIVILEGED_DIM = 32
 
 
 class CTBRBatch:
@@ -40,7 +36,6 @@ class CTBRBatch:
         self.critic_dim = self.actor_dim + PRIVILEGED_DIM
         self.max_steps = round(task["duration"] / self.dt)
         self.max_decision_steps = math.ceil(self.max_steps / self.decision_steps)
-        self.tail_steps = round(task["tail_seconds"] / self.dt)
         self.raw_history = torch.zeros(
             self.n, config["policy"]["history_steps"], 4, device=self.device
         )
@@ -58,32 +53,11 @@ class CTBRBatch:
         self.desired_acc = torch.zeros_like(self.center)
         self.pattern = torch.zeros(self.n, dtype=torch.long, device=self.device)
         for name in (
-            "phase",
-            "timer",
-            "speed_setting",
-            "circle_radius",
-            "episode_return",
-            "sum_p2",
-            "sum_v2",
-            "tail_p2",
-            "tail_v2",
-            "tail_count",
-            "tail_good",
-            "maximum_target_speed",
-            "maximum_target_accel",
-            "maximum_target_jerk",
-            "minimum_distance",
-            "first_acquisition",
-            "longest_dwell",
-            "current_dwell",
-            "sat_count",
-            "ticks",
+            "timer", "speed_setting", "episode_return", "sum_p2", "sum_v2",
+            "maximum_target_speed", "maximum_target_accel", "maximum_target_jerk",
+            "minimum_distance", "sat_count", "ticks",
         ):
             setattr(self, name, torch.zeros(self.n, device=self.device))
-        self.tail_axis_p2 = torch.zeros_like(self.center)
-        self.tail_axis_error = torch.zeros_like(self.center)
-        self.tail_projection = torch.zeros(self.n, device=self.device)
-        self.tail_projection_count = torch.zeros(self.n, device=self.device)
         self.initial_rel_pos = torch.zeros_like(self.center)
         self.initial_target_vel = torch.zeros_like(self.center)
         self.final_obs = None
@@ -110,29 +84,11 @@ class CTBRBatch:
         self.finished[mask] = False
         self.raw_history[mask] = 0
         for name in (
-            "phase",
-            "timer",
-            "episode_return",
-            "sum_p2",
-            "sum_v2",
-            "tail_p2",
-            "tail_v2",
-            "tail_count",
-            "tail_good",
-            "maximum_target_speed",
-            "maximum_target_accel",
-            "maximum_target_jerk",
-            "longest_dwell",
-            "current_dwell",
-            "sat_count",
-            "ticks",
+            "timer", "episode_return", "sum_p2", "sum_v2",
+            "maximum_target_speed", "maximum_target_accel", "maximum_target_jerk",
+            "sat_count", "ticks",
         ):
             getattr(self, name)[mask] = 0
-        self.tail_axis_p2[mask] = 0
-        self.tail_axis_error[mask] = 0
-        self.tail_projection[mask] = 0
-        self.tail_projection_count[mask] = 0
-        self.first_acquisition[mask] = -1.0
         self.minimum_distance[mask] = float("inf")
         self.ou[mask] = 0
         self.desired_acc[mask] = 0
@@ -145,12 +101,8 @@ class CTBRBatch:
             -5, 5, n
         )
         self.center[mask] = center[mask]
-        self.phase[mask] = self.uniform(-math.pi, math.pi, n)[mask]
         self.timer[mask] = self.uniform(*c["switch_interval"], n)[mask]
         self.speed_setting[mask] = self.uniform(*c["speed"], n)[mask]
-        self.circle_radius[mask] = (
-            self.speed_setting.square() / max(c["max_accel"], 0.1)
-        ).clamp_min(2.0)[mask]
         t.pos[mask] = self.center[mask].double()
         t.vel[mask] = 0
         t.acc[mask] = 0
@@ -163,13 +115,8 @@ class CTBRBatch:
             ),
             1,
         )
-        if c["kind"] not in ("hover", "goto"):
+        if c["kind"] != "hover":
             t.vel[mask] = velocity[mask].double()
-        if c["kind"] == "circle":
-            pos, vel, acc = self.circle_state()
-            t.pos[mask] = pos[mask].double()
-            t.vel[mask] = vel[mask].double()
-            t.acc[mask] = acc[mask].double()
         direction = self.randn(n, 3)
         direction[:, 2] *= 0.15
         direction /= norm(direction, True).clamp_min(1e-8)
@@ -187,23 +134,19 @@ class CTBRBatch:
             direction = -target_direction
         u.pos[mask] = (t.pos - direction * distance[:, None])[mask].float()
         velocity = self.randn(n, 3) * c["initial_velocity_noise"]
-        init_heading = c.get("initial_pursuer_heading", "legacy")
-        if init_heading == "legacy":
-            if c["match_initial_velocity"]:
-                velocity += t.vel.float()
+        init_heading = c["initial_pursuer_heading"]
+        if init_heading == "same":
+            heading_direction = target_direction
+        elif init_heading == "opposite":
+            heading_direction = -target_direction
         else:
-            if init_heading == "same":
-                heading_direction = target_direction
-            elif init_heading == "opposite":
-                heading_direction = -target_direction
-            else:
-                angle = self.uniform(-math.pi, math.pi, n)
-                heading_direction = torch.stack((
-                    torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)
-                ), 1)
-            velocity += heading_direction * self.uniform(
-                *c.get("initial_pursuer_speed", [0.0, 0.0]), n
-            )[:, None]
+            angle = self.uniform(-math.pi, math.pi, n)
+            heading_direction = torch.stack(
+                (torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), 1
+            )
+        velocity += heading_direction * self.uniform(
+            *c["initial_pursuer_speed"], n
+        )[:, None]
         u.vel[mask] = velocity[mask]
         u.acc[mask] = 0
         u.rate[mask] = 0
@@ -232,7 +175,7 @@ class CTBRBatch:
             # F_spec = drag*v*|v| - gravity*NED_vertical.
             cruise_force = u.drag[:, None] * u.vel * norm(u.vel, True)
             cruise_force[:, 2] -= p["gravity"]
-            thrust = norm(cruise_force)
+            thrust = norm(cruise_force) * u.mass_ratio
             max_load = p.get("max_load_factor_g")
             upper = torch.full_like(thrust, p["thrust_max"])
             if max_load is not None:
@@ -240,7 +183,7 @@ class CTBRBatch:
             feasible = thrust <= upper + 1e-4
             if not bool(feasible[mask].all()):
                 raise ValueError("Trimmed cruise exceeds available load/thrust envelope")
-            b3 = -cruise_force / thrust[:, None].clamp_min(1e-8)
+            b3 = -cruise_force / norm(cruise_force, True).clamp_min(1e-8)
             travel = u.vel.clone()
             travel[:, 2] = 0.0
             heading = travel / norm(travel, True).clamp_min(1e-8)
@@ -280,27 +223,6 @@ class CTBRBatch:
             mask[:, None, None], updated, self.target_history
         )
 
-    def circle_state(self):
-        r = self.circle_radius
-        phase = self.phase
-        w = self.speed_setting / r
-        offset = torch.stack(
-            (r * torch.cos(phase), r * torch.sin(phase), torch.zeros_like(r)), 1
-        )
-        velocity = torch.stack(
-            (-r * w * torch.sin(phase), r * w * torch.cos(phase), torch.zeros_like(r)),
-            1,
-        )
-        accel = torch.stack(
-            (
-                -r * w * w * torch.cos(phase),
-                -r * w * w * torch.sin(phase),
-                torch.zeros_like(r),
-            ),
-            1,
-        )
-        return self.center + offset, velocity, accel
-
     def advance_target(self, active=None):
         if active is None:
             active = ~self.finished
@@ -308,14 +230,7 @@ class CTBRBatch:
         t = self.plant.target
         n = self.n
         dt = self.dt
-        if c["kind"] in ("hover", "goto"):
-            return
-        if c["kind"] == "circle":
-            self.phase += active.float() * dt * self.speed_setting / self.circle_radius
-            t.pos, t.vel, t.acc = [
-                torch.where(active[:, None], x.double(), old)
-                for x, old in zip(self.circle_state(), (t.pos, t.vel, t.acc))
-            ]
+        if c["kind"] == "hover":
             return
         if c["kind"] == "cruise":
             t.pos = t.pos + active[:, None] * t.vel * dt
@@ -325,21 +240,9 @@ class CTBRBatch:
         self.timer = torch.where(
             changed, self.uniform(*c["switch_interval"], n), self.timer
         )
-        if c["kind"] == "maneuver":
-            # Keep the chosen Singer/turn/switchback family for this episode.
-            choices = torch.tensor(c["motion_patterns"], device=self.device)
-            self.pattern = torch.where(
-                (self.steps == 0) & active,
-                choices[
-                    torch.randint(
-                        len(choices), (n,), device=self.device, generator=self.gen
-                    )
-                ],
-                self.pattern,
-            )
-        else:
-            choice = torch.randint(5, (n,), device=self.device, generator=self.gen)
-            self.pattern = torch.where(changed, choice, self.pattern)
+        # Random target families switch among OU, lateral turns and acceleration.
+        choice = torch.randint(5, (n,), device=self.device, generator=self.gen)
+        self.pattern = torch.where(changed, choice, self.pattern)
         fresh = self.randn(n, 3)
         fresh[:, 2] *= 0.15
         fresh = limit(fresh, 1.0) * c["max_accel"]
@@ -372,6 +275,13 @@ class CTBRBatch:
         # actual speed within the same convex set. Its acceleration is a convex
         # average of reference derivatives, and ||jerk|| <= 2*A/tau <= J.
         reference = limit(self.command_velocity + command * dt, c["speed"][1])
+        # Keep randomized high-speed target paths within the specified speed
+        # band. The lower boundary is a kinematic reference projection, while
+        # actual velocity follows smoothly through the response-time filter.
+        minimum = c["speed"][0]
+        if minimum > 0:
+            magnitude = norm(reference, True).clamp_min(1e-6)
+            reference = reference * (minimum / magnitude).clamp_min(1.0)
         reference[:, 2] = reference[:, 2].clamp(-0.75, 0.75)
         tau = c["response_time_s"]
         decay = math.exp(-dt / tau)
@@ -404,7 +314,7 @@ class CTBRBatch:
         )
         remaining = (self.max_steps - self.steps).float() * self.dt / 60.0
         goals = u.pos.new_tensor(
-            [c["radius"] / 5.0, c["velocity_tolerance"] / 5.0]
+            [c["radius"] / 5.0, c["entry_relative_speed_max_mps"] / 15.0]
         ).expand(self.n, 2)
         obs = torch.cat(
             (
@@ -424,29 +334,16 @@ class CTBRBatch:
         )
         scalars = torch.stack(
             (
-                self.speed_setting / 15.0,
-                self.circle_radius / 100.0,
-                torch.full_like(remaining, c["speed"][1] / 15.0),
+                self.speed_setting / 50.0,
+                torch.full_like(remaining, c["speed"][1] / 50.0),
                 torch.full_like(remaining, c["max_accel"] / 7.0),
                 torch.full_like(remaining, c["ou_time"]),
                 torch.full_like(remaining, c["duration"] / 60.0),
-                torch.full_like(remaining, c["tail_seconds"] / 60.0),
                 torch.full_like(remaining, c["response_time_s"]),
-            ),
-            1,
+                torch.full_like(remaining, c["entry_relative_speed_max_mps"] / 15.0),
+            ), 1,
         )
         obs = obs.float()
-        count = self.tail_count.clamp_min(1)
-        history = torch.stack(
-            (
-                (self.first_acquisition >= 0).float(),
-                self.tail_count / self.tail_steps,
-                self.tail_good / count,
-                self.tail_v2 / count / 225.0,
-                self.tail_p2 / count / 900.0,
-            ),
-            1,
-        )
         kind = F.one_hot(
             torch.full((self.n,), KINDS.index(c["kind"]), device=self.device),
             len(KINDS),
@@ -460,15 +357,12 @@ class CTBRBatch:
                 F.one_hot(self.pattern, 5),
                 self.ou / 7.0,
                 self.desired_acc / 7.0,
-                self.command_velocity / 15.0,
+                self.command_velocity.float() / 50.0,
                 self.timer[:, None],
-                torch.stack((torch.sin(self.phase), torch.cos(self.phase)), 1),
                 (self.center - u.pos) / 30.0,
                 scalars,
-                history,
                 kind,
-            ),
-            1,
+            ), 1,
         ).float()
         if self.config["prediction"]["enabled"]:
             obs = torch.cat((obs, self.target_history.flatten(1)), 1)
@@ -560,150 +454,69 @@ class CTBRBatch:
         # Invalid references are explicit failures, never quietly counted as a
         # controller success; well-configured curriculum bounds avoid this case.
         invalid = ~valid_target
-        within = distance <= c["radius"]
-        first_entry = c.get("objective", "sustained") == "first_entry"
-        # Continuous relative segment check avoids tunneling through a narrow
-        # sphere between 1 ms physics samples at high closing speeds.
+        # First crossing of the 3D sphere; physical/target faults take priority.
         new_relative = (t.pos - u.pos).float()
         relative_delta = new_relative - old_relative
-        segment_alpha = (
+        alpha = (
             -(old_relative * relative_delta).sum(1)
             / relative_delta.square().sum(1).clamp_min(1e-12)
         ).clamp(0.0, 1.0)
-        segment_nearest = norm(
-            old_relative + segment_alpha[:, None] * relative_delta
-        )
-        entered = within | (segment_nearest <= c["radius"])
-        speed_limit = c.get("entry_relative_speed_max_mps")
-        entry_speed_ok = (
-            torch.ones_like(entered)
-            if speed_limit is None
-            else v_error <= speed_limit
-        )
-        unsafe_entry = entered & ~entry_speed_ok & ~failure & ~invalid & first_entry
-        safe_entry = entered & entry_speed_ok & ~failure & ~invalid
-        acquired = (self.first_acquisition < 0) & active & (
-            safe_entry if first_entry else within
-        )
-        self.first_acquisition = torch.where(
-            acquired, self.steps.float() * self.dt, self.first_acquisition
-        )
-        self.current_dwell = torch.where(
-            active,
-            torch.where(
-                within, self.current_dwell + self.dt, torch.zeros_like(distance)
-            ),
-            self.current_dwell,
-        )
-        self.longest_dwell = torch.maximum(self.longest_dwell, self.current_dwell)
+        segment_nearest = norm(old_relative + alpha[:, None] * relative_delta)
+        entered = (distance <= c["radius"]) | (segment_nearest <= c["radius"])
+        speed_ok = v_error <= c["entry_relative_speed_max_mps"]
+        success = active & entered & speed_ok & ~failure & ~invalid
+        unsafe_entry = active & entered & ~speed_ok & ~failure & ~invalid
+        done = active & (failure | invalid | deadline | success | unsafe_entry)
+        penalize = failure | invalid | unsafe_entry | (deadline & ~success)
         self.minimum_distance = torch.where(
             active,
-            torch.minimum(self.minimum_distance, distance),
+            torch.minimum(self.minimum_distance, segment_nearest),
             self.minimum_distance,
         )
         self.ticks += active.float()
         self.sum_p2 += torch.where(active, distance.square(), 0.0)
         self.sum_v2 += torch.where(active, v_error.square(), 0.0)
-        if not first_entry:
-            tail = active & (self.steps > self.max_steps - self.tail_steps)
-            self.tail_count += tail.float()
-            self.tail_good += (tail & within).float()
-            error = (t.pos - u.pos).float()
-            velocity = t.vel.float()
-            self.tail_axis_p2 += torch.where(tail[:, None], error.square(), 0.0)
-            self.tail_axis_error += torch.where(tail[:, None], error, 0.0)
-            speed2 = velocity.square().sum(1)
-            moving_tail = tail & (speed2 >= 0.2 ** 2)
-            projection = (error * velocity).sum(1) / speed2.clamp_min(0.2 ** 2)
-            self.tail_projection += torch.where(moving_tail, projection, 0.0)
-            self.tail_projection_count += moving_tail.float()
-            self.tail_p2 += torch.where(tail, distance.square(), 0.0)
-            self.tail_v2 += torch.where(tail, v_error.square(), 0.0)
         self.sat_count += (active & (action.abs() > 0.98).any(1)).float()
-        for name, value in [
+        for name, value in (
             ("maximum_target_speed", norm(t.vel)),
             ("maximum_target_accel", norm(t.acc)),
             ("maximum_target_jerk", norm(t.acc - old_acc) / self.dt),
-        ]:
+        ):
             setattr(
-                self,
-                name,
+                self, name,
                 torch.where(
                     active,
                     torch.maximum(getattr(self, name), value),
                     getattr(self, name),
                 ),
             )
-        count = self.tail_count.clamp_min(1)
-        success = (
-            deadline
-            & ~failure
-            & ~invalid
-            & (self.tail_count >= self.tail_steps)
-            & (self.tail_good / count >= c["minimum_tail_fraction"])
-            & (torch.sqrt(self.tail_v2 / count) <= c["velocity_tolerance"])
+        length = c["entry_velocity_distance_m"]
+        progress_reward = r["progress"] * (
+            previous / (previous + length) - distance / (distance + length)
         )
-        if first_entry:
-            success = active & safe_entry
-        done = active & (failure | deadline | invalid | success | unsafe_entry)
-        penalize = failure | invalid | unsafe_entry
-        if first_entry:
-            penalize = penalize | (deadline & ~success)
-        # Bounded distance potential avoids an unsafe high-speed crossing
-        # accumulating hundreds of meters of positive progress reward.
-        # Legacy tasks with no speed-limited entry keep their original metric.
-        if first_entry and c.get("entry_relative_speed_max_mps") is not None:
-            length = c.get("entry_velocity_distance_m", 5.0)
-            progress_reward = r["progress"] * (
-                previous / (previous + length) - distance / (distance + length)
-            )
-        else:
-            progress_reward = r["progress"] * (previous - distance)
-        components = dict(
-            tilt=-self.dt * r["tilt"] * tilt.square(),
-            rate=-self.dt
-            * r["rate"]
-            * (u.rate / self.plant.rate_limits).square().sum(1),
-            progress=progress_reward,
-            action_derivative=-r["action_derivative"] * derivative_cost,
-            completion=r["completion_bonus"] * success.float(),
-            failure=-r["failure"] * penalize.float(),
+        closing_speed = (
+            -((t.vel - u.vel).float() * new_relative).sum(1)
+            / distance.clamp_min(1e-6)
+        ).clamp_min(0.0)
+        allowable_closing = torch.sqrt(
+            2.0 * c["entry_brake_accel_mps2"]
+            * (distance - c["radius"]).clamp_min(0.0)
         )
-        if first_entry:
-            # The distance-dependent braking penalty is active only if closing
-            # speed exceeds the stopping-speed envelope.
-            radial_closing = (
-                -((t.vel - u.vel).float() * new_relative).sum(1)
-                / distance.clamp_min(1e-6)
-            ).clamp_min(0.0)
-            allowed = torch.sqrt(
-                2.0
-                * c.get("entry_brake_accel_mps2", 8.0)
-                * (distance - c["radius"]).clamp_min(0.0)
-            )
-            scale_v = c.get("entry_velocity_scale_mps", 15.0)
-            braking_error = ((radial_closing - allowed).clamp_min(0.0) / scale_v).square()
-            velocity_error = (v_error / scale_v).square() * torch.exp(
-                -distance / c.get("entry_velocity_distance_m", 5.0)
-            )
-            components.update(
-                braking=-self.dt * r.get("braking", 0.0) * braking_error,
-                entry_velocity=-self.dt * r.get("entry_velocity", 0.0) * velocity_error,
-                time=-self.dt * r.get("time", 0.0) * torch.ones_like(distance),
-            )
-        if not first_entry:
-            # Keep legacy reward order for reproducible sustained-policy evaluation.
-            components = dict(
-                survival=torch.full_like(distance, self.dt * r["survival"]),
-                position=self.dt * r["position"] * torch.exp(-distance / r["position_length"]),
-                relative_velocity=self.dt * r["relative_velocity"]
-                * torch.exp(-v_error / r["velocity_length"]),
-                **components,
-            )
-            completion = components.pop("completion")
-            failure_reward = components.pop("failure")
-            components.update(acquisition=r["acquisition_bonus"] * acquired.float(),
-                              completion=completion, failure=failure_reward)
+        scale_v = c["entry_velocity_scale_mps"]
+        braking = ((closing_speed - allowable_closing).clamp_min(0.0) / scale_v).square()
+        velocity_cost = (v_error / scale_v).square() * torch.exp(-distance / length)
+        components = {
+            "tilt": -self.dt * r["tilt"] * tilt.square(),
+            "rate": -self.dt * r["rate"]
+                    * (u.rate / self.plant.rate_limits).square().sum(1),
+            "progress": progress_reward,
+            "action_derivative": -r["action_derivative"] * derivative_cost,
+            "braking": -self.dt * r["braking"] * braking,
+            "entry_velocity": -self.dt * r["entry_velocity"] * velocity_cost,
+            "time": -self.dt * r["time"] * torch.ones_like(distance),
+            "completion": r["completion_bonus"] * success.float(),
+            "failure": -r["failure"] * penalize.float(),
+        }
         self.reward_components = {
             key: torch.where(active, value, 0.0) * r["scale"]
             for key, value in components.items()
@@ -715,92 +528,46 @@ class CTBRBatch:
         records = []
         if bool(done.any()):
             ids = done.nonzero(as_tuple=True)[0].cpu().tolist()
-            fields = (
-                torch.stack(
-                    (
-                        success.float(),
-                        outside.float(),
-                        (speed > p["max_speed"]).float(),
-                        invalid.float(),
-                        self.steps.float() * self.dt,
-                        self.episode_return,
-                        self.minimum_distance,
-                        torch.sqrt(self.sum_p2 / self.ticks.clamp_min(1)),
-                        torch.sqrt(self.sum_v2 / self.ticks.clamp_min(1)),
-                        torch.sqrt(self.tail_p2 / count),
-                        torch.sqrt(self.tail_v2 / count),
-                        self.tail_good / count,
-                        self.first_acquisition,
-                        self.longest_dwell,
-                        self.maximum_target_speed,
-                        self.maximum_target_accel,
-                        self.maximum_target_jerk,
-                        self.sat_count / self.ticks.clamp_min(1),
-                        self.tail_count,
-                    ),
-                    1,
-                )[done]
-                .cpu()
-                .tolist()
-            )
-            for slot, v in zip(ids, fields):
-                reason = (
-                    "success"
-                    if v[0]
-                    else (
-                        "invalid_target"
-                        if v[3]
-                        else (
-                            "outside"
-                            if v[1]
-                            else (
-                                "speed"
-                                if v[2]
-                                else "tilt" if failure[slot] else (
-                            "unsafe_entry" if unsafe_entry[slot] else
-                            "timeout" if first_entry else "tracking_failed"
-                        )
-                            )
-                        )
-                    )
-                )
-                entry = (
-                    dict(entry_time_s=v[4] if v[0] else None,
-                         entry_relative_speed_mps=float(v_error[slot]) if (v[0] or unsafe_entry[slot]) else None,
-                         unsafe_entry=bool(unsafe_entry[slot]))
-                    if first_entry else {}
-                )
+            for slot in ids:
+                if invalid[slot]:
+                    reason = "invalid_target"
+                elif outside[slot]:
+                    reason = "outside"
+                elif speed[slot] > p["max_speed"]:
+                    reason = "speed"
+                elif failure[slot]:
+                    reason = "tilt"
+                elif unsafe_entry[slot]:
+                    reason = "unsafe_entry"
+                elif success[slot]:
+                    reason = "success"
+                else:
+                    reason = "timeout"
+                crossed = bool(success[slot] or unsafe_entry[slot])
                 records.append(
                     dict(
-                        **entry,
                         slot=slot,
                         task=c["name"],
-                        success=bool(v[0]),
+                        success=bool(success[slot]),
                         reason=reason,
-                        time=v[4],
-                        return_unscaled=v[5],
-                        minimum_distance=v[6],
-                        position_rmse=v[7],
-                        relative_velocity_rmse=v[8],
-                        tail_position_rmse=v[9],
-                        tail_velocity_rmse=v[10],
-                        tail_within_fraction=v[11],
-                        first_acquisition_time=v[12] if v[12] >= 0 else None,
-                        longest_dwell_s=v[13],
-                        target_max_speed=v[14],
-                        target_max_accel=v[15],
-                        target_max_jerk=v[16],
-                        action_saturation_fraction=v[17],
-                        tail_steps_observed=int(v[18]),
-                        tail_steps_required=self.tail_steps,
-                        tail_complete=int(v[18]) >= self.tail_steps,
-                        tail_axis_rmse_m=(self.tail_axis_p2[slot] / count[slot]).sqrt().cpu().tolist(),
-                        tail_axis_mean_error_m=(self.tail_axis_error[slot] / count[slot]).cpu().tolist(),
-                        tail_velocity_projection_s=(
-                            float(self.tail_projection[slot] / self.tail_projection_count[slot])
-                            if self.tail_projection_count[slot] > 0 else None
+                        time=float(self.steps[slot]) * self.dt,
+                        return_unscaled=float(self.episode_return[slot]),
+                        minimum_distance=float(self.minimum_distance[slot]),
+                        position_rmse=float(
+                            torch.sqrt(self.sum_p2[slot] / self.ticks[slot].clamp_min(1))
                         ),
-                        tail_velocity_projection_samples=int(self.tail_projection_count[slot]),
+                        relative_velocity_rmse=float(
+                            torch.sqrt(self.sum_v2[slot] / self.ticks[slot].clamp_min(1))
+                        ),
+                        entry_time_s=float(self.steps[slot]) * self.dt if success[slot] else None,
+                        entry_relative_speed_mps=float(v_error[slot]) if crossed else None,
+                        unsafe_entry=bool(unsafe_entry[slot]),
+                        target_max_speed=float(self.maximum_target_speed[slot]),
+                        target_max_accel=float(self.maximum_target_accel[slot]),
+                        target_max_jerk=float(self.maximum_target_jerk[slot]),
+                        action_saturation_fraction=float(
+                            self.sat_count[slot] / self.ticks[slot].clamp_min(1)
+                        ),
                     )
                 )
         return reward * r["scale"], done, records
