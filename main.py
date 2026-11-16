@@ -1,4 +1,4 @@
-"""Train and evaluate direct-CTBR pursuit policies."""
+"""Train, evaluate and compare high-speed first-entry CTBR policies."""
 
 import argparse
 import hashlib
@@ -31,7 +31,7 @@ def parser():
     e = commands.add_parser("evaluate")
     e.add_argument("--checkpoint", help="Required unless --reference is used")
     e.add_argument("--out", required=True)
-    e.add_argument("--config", help="Explicit same-interface task transfer evaluation")
+    e.add_argument("--config", help="First-entry task profile; must match checkpoint interface")
     e.add_argument("--episodes", type=int, default=64)
     e.add_argument("--stochastic", action="store_true")
     e.add_argument(
@@ -47,13 +47,13 @@ def parser():
     e.add_argument("--trace-count", type=int, default=2)
     e.add_argument("--num-envs", type=int)
     q = commands.add_parser("curriculum")
-    q.add_argument("--plan", default="configs/ctbr/plan.json")
+    q.add_argument("--plan", default="configs/first_entry_highspeed/plan.json")
     q.add_argument("--out", required=True)
     q.add_argument("--physics-steps", type=int)
     q.add_argument("--episodes", type=int, default=32)
     q.add_argument("--minimum-success", type=float, default=0.95)
     q.add_argument("--phases", nargs="+")
-    q.add_argument("--init-from", help="Explicit same-interface v701 initialization")
+    q.add_argument("--init-from", help="Initialize from a checkpoint with the current first-entry interface")
     for sub in (t, e, q):
         sub.add_argument("--device", default="cpu")
         sub.add_argument("--seed", type=int, default=42)
