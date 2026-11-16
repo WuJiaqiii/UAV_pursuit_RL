@@ -28,6 +28,10 @@ def parser():
     init = t.add_mutually_exclusive_group()
     init.add_argument("--resume")
     init.add_argument("--init-from")
+    init.add_argument(
+        "--actor-init-from",
+        help="Import compatible Actor weights only; reinitialize Critic and optimizers",
+    )
     t.add_argument("--physics-steps", type=int)
     e = commands.add_parser("evaluate")
     e.add_argument("--checkpoint", help="Required unless --reference is used")
@@ -83,7 +87,10 @@ def execute(argv=None):
             if args.physics_steps < 0:
                 raise ValueError("Budget must be nonnegative")
             c["training"]["physics_steps"] = args.physics_steps
-        return train(c, args.out, args.resume, args.init_from)
+        return train(
+            c, args.out, args.resume, args.init_from,
+            actor_init_from=args.actor_init_from,
+        )
     if args.command == "curriculum":
         return run(
             args.plan,

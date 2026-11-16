@@ -36,10 +36,16 @@ The phase budgets are **upper bounds**, not measured convergence values. They ra
 
 ## Transfer and reproducibility
 
-Changing drag, thrust, rewards, position caps or policy inputs changes the direct-CTBR checkpoint interface. Do **not** `--resume` or `--init-from` a low-speed checkpoint into these profiles. Start a new model in the shared high-speed contract; later introduce an explicit Actor-only weight migration if wanted. Preserve all existing low-speed config files.
+Changing drag, thrust, rewards, position caps or policy inputs changes the direct-CTBR checkpoint interface. Do **not** `--resume` or `--init-from` a low-speed checkpoint into these profiles. Start a new model in the shared high-speed contract or explicitly use `--actor-init-from PATH` for architecture-compatible warm-start. The latter copies only Actor MLP weights, retaining new task-specific Critic, ValueNorm, exploration statistics and optimizer state; source and destination must have identical observation and action dimensions. It does not certify that the source policy works at new speeds. Preserve all existing low-speed config files.
 
 The reference controller supports `training.teacher_method` = `pd`, `pn`, or `pn_hybrid`. No guidance commands are mixed into the learned action during PPO. A successful PN baseline does not establish learnability or generalization.
 
 ## Physics limits
 
 2.5g is defined here as total specific thrust divided by gravitational acceleration, not 2.5g *horizontal acceleration*. Maximum speed and tilt remain separate safety checks. Mass randomization also clips commanded actual load. Steady cruise feasibility depends on drag and tilt; the trimmed initializer raises if its requested steady state cannot be achieved.
+
+Optional first-stage Actor-only warm start from an earlier compatible checkpoint:
+```bash
+python main.py train --config configs/first_entry_highspeed/01_static.json \\
+  --actor-init-from runs/legacy/checkpoints/best.pt --out runs/v71_actor_warmstart --device cuda
+```

@@ -140,9 +140,12 @@ def initialization_validation(model, c, root, progress, label):
     return report
 
 
-def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None):
-    if resume and init_from:
-        raise ValueError("resume and init_from are mutually exclusive")
+def train(
+    c, out, resume=None, init_from=None, replay=None, promotion_check=None,
+    actor_init_from=None,
+):
+    if sum(bool(x) for x in (resume, init_from, actor_init_from)) > 1:
+        raise ValueError("resume, init_from and actor_init_from are mutually exclusive")
     root = Path(out).resolve()
     tr = c["training"]
     if resume and Path(resume).resolve().parent.parent != root:
@@ -226,27 +229,43 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             progress["promotion_passed"] = False
     else:
         model = new_model(c)
-        if init_from:
-            parent, old, saved = load(init_from, c["device"])
-            if interface(old) != interface(c):
-                raise ValueError(
-                    "Transfer would change action, observation, dynamics, reward or exploration contract"
-                )
-            model.load_state_dict(parent.state_dict())
+        if init_from or actor_init_from:
+            source = init_from or actor_init_from
+            parent, old, saved = load(source, c["device"])
+            if init_from:
+                if interface(old) != interface(c):
+                    raise ValueError(
+                        "Transfer would change action, observation, dynamics, reward or exploration contract"
+                    )
+                model.load_state_dict(parent.state_dict())
+            else:
+                if (
+                    parent.obs_dim != model.obs_dim
+                    or parent.action_dim != model.action_dim
+                    or parent.base_obs_dim != model.base_obs_dim
+                ):
+                    raise ValueError("Actor-only transfer requires identical observation and action dimensions")
+                model.actor.load_state_dict(parent.actor.state_dict())
+                # Keep the new task's exploration statistics and initialize
+                # its Critic/ValueNorm/optimizer on the new reward and physics.
             model.critic_policy_match = False
             progress["critic_needs_calibration"] = True
             progress["parent_physics_steps"] = saved["progress"][
                 "cumulative_ppo_physics_steps"
             ]
             progress["parent"] = dict(
-                path=str(Path(init_from).resolve()),
-                sha256=hashlib.sha256(Path(init_from).read_bytes()).hexdigest(),
+                path=str(Path(source).resolve()),
+                sha256=hashlib.sha256(Path(source).read_bytes()).hexdigest(),
                 origin=saved["origin"],
                 ppo_updates=saved["progress"]["ppo_updates"],
-                critic="warm weights, fresh optimizers + new MC calibration",
+                critic=(
+                    "warm weights, fresh optimizers + new MC calibration"
+                    if init_from else "new weights, new optimizers + MC warm-up"
+                ),
+                mode="full" if init_from else "actor_only",
                 migration=saved["progress"].get("migration"),
             )
-            origin = "transfer_initial"
+            origin = "transfer_initial" if init_from else "actor_transfer_initial"
             del parent
             if tr["transfer_dagger_updates"]:
                 prior = initialization_validation(
@@ -400,14 +419,14 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             tail_rmse=initial["mean_tail_position_rmse"],
         )
     if (
-        not init_from
+        not (init_from or actor_init_from)
         and progress["ppo_updates"] == 0
         and progress["parent"] is None
         and tr["bc_updates"]
     ):
         initial = json.loads((root / "initial_validation.json").read_text())
     if (
-        not init_from
+        not (init_from or actor_init_from)
         and progress["ppo_updates"] == 0
         and progress["parent"] is None
         and tr["bc_updates"]
