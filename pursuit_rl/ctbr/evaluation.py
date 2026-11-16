@@ -1,4 +1,4 @@
-"""Paired frozen-policy full episodes, true MC returns and optional traces."""
+"""Full first-entry evaluations, PN/PD baselines, MC returns and traces."""
 
 import collections
 import hashlib
@@ -26,6 +26,8 @@ def evaluate(
 ):
     if episodes < 1:
         raise ValueError("episodes must be positive")
+    if model is None and not reference:
+        raise ValueError("Evaluation requires a policy or --reference")
     records = []
     states = []
     targets = []
@@ -165,19 +167,19 @@ def evaluate(
     def mean(key):
         return sum(r[key] for r in records) / episodes
 
-    full_tail = [r for r in records if r["tail_complete"]]
-    observed_tail = [r for r in records if r["tail_steps_observed"] > 0]
 
-    def tail_mean(key, population=full_tail):
+    successes = [r for r in records if r["success"]]
+    failures = collections.Counter(r["reason"] for r in records if not r["success"])
+
+    def avg(key, population=records):
         return sum(r[key] for r in population) / len(population) if population else None
 
-    first_entry = c["task"].get("objective", "sustained") == "first_entry"
     report = dict(
-        schema="pursuit-direct-ctbr-evaluation-v4",
+        schema="pursuit-first-entry-evaluation-v1",
         task=c["task"],
         seed=seed,
         num_envs=c["num_envs"],
-        physics_hz=1000,
+        physics_hz=1 / c["physics"]["dt"],
         decision_hz=1 / decision_dt(c),
         decision_steps=c["policy"]["decision_steps"],
         actor_position_error_cap_m=(
@@ -187,98 +189,46 @@ def evaluate(
             model.log_std.detach().exp().cpu().tolist() if model is not None else None
         ),
         policy=(
-            "geometric_reference"
-            if reference
+            "geometric_reference" if reference
             else "stochastic" if stochastic else "deterministic"
         ),
-        reference_method=(
-            c["training"].get("teacher_method", "pd") if reference else None
-        ),
+        reference_method=c["training"]["teacher_method"] if reference else None,
         success_definition=(
-            "First 3D sphere entry with configured relative speed and no physical failure"
-            if first_entry else
-            "Safe until full deadline; tail within-radius fraction and relative-velocity RMSE pass configured thresholds"
+            "First target-sphere crossing with relative speed <= the configured limit "
+            "and no physical/target-envelope failure"
         ),
         episodes=episodes,
-        successes=sum(r["success"] for r in records),
-        success_rate=sum(r["success"] for r in records) / episodes,
-        failures=dict(
-            collections.Counter(r["reason"] for r in records if not r["success"])
-        ),
-        mean_position_rmse=mean("position_rmse"),
-        mean_tail_position_rmse=tail_mean("tail_position_rmse"),
-        precision_rmse_limit_m=c["task"]["maximum_tail_rmse"],
-        precision_passed=(
-            tail_mean("tail_position_rmse") is not None
-            and tail_mean("tail_position_rmse") <= c["task"]["maximum_tail_rmse"]
-        ),
-        mean_tail_velocity_rmse=tail_mean("tail_velocity_rmse"),
-        mean_tail_within_fraction=tail_mean("tail_within_fraction"),
-        full_tail_episodes=len(full_tail),
-        observed_tail_episodes=len(observed_tail),
-        mean_observed_tail_position_rmse=tail_mean("tail_position_rmse", observed_tail),
-        tail_metric_population="Only episodes with the complete configured tail window; absent data is null",
+        successes=len(successes),
+        success_rate=len(successes) / episodes,
+        failures=dict(failures),
+        unsafe_entry_count=failures.get("unsafe_entry", 0),
+        unsafe_entry_rate=failures.get("unsafe_entry", 0) / episodes,
+        entry_radius_m=c["task"]["radius"],
+        entry_relative_speed_limit_mps=c["task"]["entry_relative_speed_max_mps"],
+        mean_entry_time_s=avg("entry_time_s", successes),
+        mean_entry_relative_speed_mps=avg("entry_relative_speed_mps", successes),
+        mean_minimum_distance_m=avg("minimum_distance"),
+        mean_position_rmse=avg("position_rmse"),
+        mean_relative_velocity_rmse=avg("relative_velocity_rmse"),
+        mean_action_saturation_fraction=avg("action_saturation_fraction"),
+        mean_target_max_speed_mps=avg("target_max_speed"),
+        mean_target_max_accel_mps2=avg("target_max_accel"),
         mean_mc_return=float(returns.mean()),
         critic_bias=float((values - returns).mean()),
         critic_error_standard_error=float(
             (values - returns).std(unbiased=False) / math.sqrt(episodes)
         ),
         critic_mc_rmse=float((values - returns).square().mean().sqrt()),
-        critic_matches_policy=stochastic
-        and not reference
-        and getattr(model, "critic_policy_match", True),
+        critic_matches_policy=(
+            stochastic and not reference
+            and getattr(model, "critic_policy_match", True)
+        ),
         reward_scale=c["reward"]["scale"],
         initial_state_digest=hashlib.sha256(
             json.dumps(signatures, sort_keys=True).encode()
         ).hexdigest(),
         episodes_detail=records,
     )
-    if first_entry:
-        hits = [r for r in records if r["success"]]
-        report.update(
-            entry_radius_m=c["task"]["radius"],
-            mean_entry_time_s=tail_mean("entry_time_s", hits),
-            mean_entry_relative_speed_mps=tail_mean("entry_relative_speed_mps", hits),
-            mean_minimum_distance_m=mean("minimum_distance"),
-            entry_relative_speed_limit_mps=c["task"].get("entry_relative_speed_max_mps"),
-            unsafe_entry_count=sum(r["reason"] == "unsafe_entry" for r in records),
-            unsafe_entry_rate=sum(r["reason"] == "unsafe_entry" for r in records) / episodes,
-        )
-        report["precision_passed"] = None
-    if not first_entry and c["task"]["kind"] == "cruise":
-        signed = []
-        for r in full_tail:
-            velocity = r["start_target_velocity"]
-            speed = math.sqrt(sum(x*x for x in velocity))
-            if speed >= 0.2:
-                offset = sum(e*v for e, v in zip(r["tail_axis_mean_error_m"], velocity)) / speed
-                r["tail_signed_along_offset_m"] = offset
-                signed.append(offset)
-        absolute = torch.tensor(signed, dtype=torch.float64).abs()
-        report["tail_along_offset_episodes"] = len(signed)
-        report["tail_abs_along_offset_median_m"] = (
-            float(torch.quantile(absolute, 0.5)) if signed else None)
-        report["tail_abs_along_offset_p90_m"] = (
-            float(torch.quantile(absolute, 0.9)) if signed else None)
-    if not first_entry:
-        report["joint_precision_success_rate"] = sum(
-            r["success"] and r["tail_complete"]
-            and r["tail_position_rmse"] <= c["task"]["maximum_tail_rmse"]
-            for r in records
-        ) / episodes
-        report["mean_tail_axis_rmse_m"] = (
-            [sum(r["tail_axis_rmse_m"][i] for r in full_tail) / len(full_tail)
-             for i in range(3)] if full_tail else None
-        )
-        report["tail_position_rmse_p95_m"] = (
-            float(torch.quantile(torch.tensor([r["tail_position_rmse"] for r in full_tail]), 0.95))
-            if full_tail else None
-        )
-        report["velocity_projection_definition"] = (
-            "Mean dot(target-pursuer, target_velocity)/speed^2 over tail physics ticks "
-            "with target speed >=0.2 m/s; positive means behind along velocity; "
-            "a geometric proxy, not identified latency. Per-episode values include partial tails."
-        )
     if forecast_reports:
         horizons = c["prediction"]["horizons_s"]
         counts = [
@@ -294,11 +244,9 @@ def evaluate(
                             (r["rmse_by_horizon_m"][name][k] or 0) ** 2
                             * r["samples_by_horizon"][k]
                             for r in forecast_reports
-                        )
-                        / counts[k]
+                        ) / counts[k]
                     )
-                    if counts[k]
-                    else None
+                    if counts[k] else None
                 )
                 for k in range(len(horizons))
             ]
@@ -314,27 +262,14 @@ def evaluate(
 
 def score(report):
     records = report["episodes_detail"]
-    if report["task"].get("objective", "sustained") == "first_entry":
-        hits = [r for r in records if r["success"]]
-        safe_fraction = sum(r["reason"] in ("success", "timeout") for r in records) / len(records)
-        error = (
-            sum(r["entry_time_s"] for r in hits) / len(hits)
-            if hits else sum(r["minimum_distance"] for r in records) / len(records)
-        )
-        return (report["success_rate"], safe_fraction, -error)
-    completed = sum(
-        r["reason"] in ("success", "tracking_failed") for r in records
+    safe_fraction = sum(
+        r["reason"] in ("success", "timeout") for r in records
     ) / len(records)
-    error = sum(
-        (
-            r["tail_position_rmse"]
-            if r["reason"] in ("success", "tracking_failed")
-            else max(r["position_rmse"], r["tail_position_rmse"])
-            + report["task"]["radius"]
-        )
-        for r in records
-    ) / len(records)
-    return (report["success_rate"], completed, -error)
+    if report["successes"]:
+        error = report["mean_entry_time_s"]
+    else:
+        error = report["mean_minimum_distance_m"]
+    return (report["success_rate"], safe_fraction, -error)
 
 
 def improved(report, best):

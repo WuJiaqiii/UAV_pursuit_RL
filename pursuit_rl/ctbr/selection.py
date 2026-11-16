@@ -1,28 +1,19 @@
-"""Precision-aware feasibility, independent of score ranking and stopping."""
+"""First safe-entry curriculum gate, independent of reward ranking."""
 
 
 def passed(report, config, minimum_success=None):
     minimum = (
         config["training"]["minimum_success"]
-        if minimum_success is None
-        else minimum_success
+        if minimum_success is None else minimum_success
     )
-    if config["task"].get("objective", "sustained") == "first_entry":
-        return report["success_rate"] >= minimum
-    error = report["mean_tail_position_rmse"]
-    return (
-        report["success_rate"] >= minimum
-        and error is not None
-        and error <= config["task"]["maximum_tail_rmse"]
-    )
+    return report["success_rate"] >= minimum
 
 
 def summary(report, config, minimum_success=None):
     return dict(
         seed=report["seed"],
         success_rate=report["success_rate"],
-        tail_rmse=report["mean_tail_position_rmse"],
-        maximum_tail_rmse=config["task"]["maximum_tail_rmse"],
+        unsafe_entry_rate=report["unsafe_entry_rate"],
         failures=report["failures"],
         passed=passed(report, config, minimum_success),
     )
