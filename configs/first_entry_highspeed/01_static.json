@@ -24,7 +24,7 @@
     "bc_updates": 500,
     "dagger_rounds": 0,
     "transfer_dagger_updates": 0,
-    "prediction_updates_enabled": false,
+    "prediction_updates_enabled": true,
     "initialization_success_floor": 0,
     "teacher_method": "pn_hybrid",
     "teacher_pn_gain": 3,
