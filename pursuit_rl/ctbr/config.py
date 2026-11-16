@@ -457,11 +457,19 @@ def interface(c):
             if c["schema"] == "pursuit-ctbr-v3"
             else "ned-actuator-history-causal-target-window-v4"
         ),
-        "physics": c["physics"],
+        # Legacy v4 checkpoints lack the optional high-speed fields. Their
+        # absent keys and explicit disabled defaults describe the same contract.
+        "physics": {
+            k: v for k, v in c["physics"].items()
+            if k != "max_load_factor_g" or v is not None
+        },
         "policy": {
             k: v for k, v in c["policy"].items() if k not in ("initial_std", "min_std")
         },
-        "reward": c["reward"],
+        "reward": {
+            k: v for k, v in c["reward"].items()
+            if k not in ("braking", "entry_velocity", "time") or v != 0
+        },
         "prediction": c["prediction"],
         "critic": c["critic"],
     }

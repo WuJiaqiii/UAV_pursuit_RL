@@ -1,3 +1,19 @@
+# UAV pursuit RL — v7.1 direct CTBR first-entry curriculum
+
+当前默认训练配置已升级至 `configs/first_entry_highspeed/01_static.json`，并提供 13 阶段低速／中速／高速课程（尾追、迎头、随机）及 **2.5g 总推力**物理包络。Actor 继续直接输出四维 CTBR；目标最高 50 m/s，自机最高 60 m/s；0.5 m 球首次进入时，要求相对速度不高于 15 m/s，且不能违反机体和空间约束。高速度与推力参数是待验证的仿真假设，不应当视为实机验证结果。
+
+完整说明：[高速首次安全进入课程、配置与实验命令](docs/HIGH_SPEED_FIRST_ENTRY.md)。
+
+```bash
+python main.py evaluate --reference --config configs/first_entry_highspeed/01_static.json --episodes 32 --out runs/v71_teacher.json --device cpu
+python main.py train --config configs/first_entry_highspeed/01_static.json --out runs/v71_static --device cuda
+python main.py curriculum --plan configs/first_entry_highspeed/plan.json --out runs/v71_curriculum --device cuda --episodes 64 --minimum-success 0.8
+```
+
+以下为 v7.0.1 旧实验说明。旧检查点评估和续训请始终指定它们原来的 `--config`，不要使用新默认配置代替旧配置。
+
+---
+
 # UAV pursuit RL
 
 当前默认任务是首次安全进入目标周围 **0.5 m 三维球体**。每个回合从 1–2 m 开始，最多 12 s。以 1 ms 物理步判断进入，进入当步安全即成功并终止。倾角、速度、边界或目标合法性失败优先于成功。到期未进入记为 timeout。任务奖励使用接近进展、成功奖励和失败惩罚，并保留原动作与姿态正则项。

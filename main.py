@@ -15,12 +15,12 @@ from pursuit_rl.ctbr.errors import ExperimentGateError
 from pursuit_rl.ctbr.checkpoint import migrate
 
 
-DEFAULT_ENTRY_CONFIG = "configs/first_entry/static.json"
+DEFAULT_ENTRY_CONFIG = "configs/first_entry_highspeed/01_static.json"
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--version", action="version", version="7.0.1")
+    p.add_argument("--version", action="version", version="7.1.0")
     commands = p.add_subparsers(dest="command", required=True)
     t = commands.add_parser("train")
     t.add_argument("--config", default=DEFAULT_ENTRY_CONFIG)
