@@ -22,8 +22,6 @@
     "validation_every": 2000000,
     "validation_episodes": 128,
     "bc_updates": 0,
-    "dagger_rounds": 0,
-    "transfer_dagger_updates": 0,
     "prediction_updates_enabled": true,
     "initialization_success_floor": 0,
     "teacher_method": "pn_hybrid",
@@ -43,7 +41,6 @@
     "tilt": 0.08
   },
   "task": {
-    "objective": "first_entry",
     "radius": 0.5,
     "entry_relative_speed_max_mps": 15,
     "entry_brake_accel_mps2": 12,
@@ -52,7 +49,6 @@
     "initial_tilt_deg": 0,
     "initial_velocity_noise": 0,
     "randomization": 0.05,
-    "match_initial_velocity": false,
     "trimmed_initialization": false,
     "encounter": "random",
     "initial_pursuer_heading": "random",
