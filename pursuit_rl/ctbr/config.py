@@ -179,10 +179,8 @@ def validate(c):
     p, t, tr, pol = (c[k] for k in ("physics", "task", "training", "policy"))
     if p["dt"] != 0.001 or p["substeps"] != 1:
         raise ValueError("Physics integration must be 1 ms")
-    if not 0 < p["thrust_min"] + 1e-8 < p["hover_thrust"] < p["thrust_max"] + 1e-8:
-        # thrust_min=0 is valid, but thrust_max must exceed hover thrust.
-        if not (0 <= p["thrust_min"] < p["hover_thrust"] < p["thrust_max"]):
-            raise ValueError("Invalid CTBR thrust endpoints")
+    if not 0 <= p["thrust_min"] < p["hover_thrust"] < p["thrust_max"]:
+        raise ValueError("Invalid CTBR thrust endpoints")
     if p["gravity"] <= 0 or p["max_load_factor_g"] <= 1:
         raise ValueError("Invalid gravity or maximum load factor")
     if p["thrust_max"] > p["gravity"] * p["max_load_factor_g"] + 1e-7:

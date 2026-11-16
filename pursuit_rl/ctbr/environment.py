@@ -318,10 +318,10 @@ class CTBRBatch:
         ).expand(self.n, 2)
         obs = torch.cat(
             (
-                (t.pos - u.pos) / 30.0,
-                (t.vel - u.vel) / 15.0,
+                (t.pos - u.pos) / 100.0,
+                (t.vel - u.vel) / 50.0,
                 t.acc / 7.0,
-                u.vel / 15.0,
+                u.vel / 50.0,
                 u.rot.flatten(1),
                 u.rate / max(p["rate_xy"], p["rate_yaw"]),
                 (u.thrust / p["hover_thrust"])[:, None],

@@ -35,7 +35,7 @@ class TrajectoryPredictor(nn.Module):
         if self.config["mode"] == "lstm":
             centered = history.clone()
             centered[:, :, :3] = (history[:, :, :3] - last[:, None, :3]) / scale
-            centered[:, :, 3:6] /= 15.0
+            centered[:, :, 3:6] /= 50.0
             centered[:, :, 6:9] /= 7.0
             centered[:, :, :9] *= history[:, :, 9:10]
             output, _ = self.lstm(centered)
