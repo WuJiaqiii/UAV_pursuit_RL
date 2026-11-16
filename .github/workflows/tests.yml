@@ -1,7 +1,7 @@
 name: Python tests
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "refactor/**"]
   pull_request:
 
 jobs:

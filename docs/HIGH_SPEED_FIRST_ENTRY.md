@@ -1,61 +1,90 @@
-# High-speed first-entry CTBR curriculum (2.5g)
+# First-entry CTBR experiments (v8)
 
-This is an **experimental flight envelope**, not a validated real drone.
+## Task and terminal semantics
 
-- Maximum nominal specific thrust: 2.5 × 9.81 = **24.525 m/s²**.
-- Maximum pursuer speed: **60 m/s**; target speed up to **50 m/s**.
-- Entry sphere radius **0.5 m**, relative-speed limit **15 m/s**.
-- Direct 4-D CTBR Actor, 100 Hz policy, 1 kHz physics.
-- Nominal quadratic drag 0.005; actuator time constants and drag must be calibrated against flight logs before real-world deployment.
-- Every phase shares one physics/observation/reward contract. Config names and task objectives differ.
-- The agent's true relative pose/velocity are available as oracle observations. No sensor model is claimed.
+The pursuer must intersect the first-entry sphere of radius `R=0.5 m`
+before the episode deadline, with relative velocity norm no greater than
+`15 m/s`, without exceeding the platform speed/tilt envelope or invalidating
+the target workspace. The very first crossing is terminal: a crossing faster
+than 15 m/s becomes `unsafe_entry` (failure), even if the pursuer could
+decelerate after flying into the sphere. A 1 ms relative-segment/sphere check
+avoids missed crossings between integration samples.
 
-## Tasks
+The Actor outputs four normalized CTBR actions at 100 Hz: normalized
+mass-specific collective thrust and normalized three-axis body-rate
+setpoints. Commands remain held through ten 1 ms dynamics steps. First-order
+thrust/rate dynamics and SO(3) kinematics model the inner-loop response; no
+motor-level control or AirSim execution is claimed.
 
-The thirteen progressive stages cover stationary, low speed, medium speed (15–20 m/s), high speed (40–45 m/s), and extreme speed (45–50 m/s). Within each band, tail, head-on and random geometries are exercised. Head-on phases start farther away to allow braking before the 0.5 m sphere.
+The 2.5g limit applies to total specific thrust:
+`(T/m)/g <= 2.5`, **not** to horizontal acceleration. Drag is quadratic with
+nominal coefficient 0.005; at 50 m/s, modeled drag acceleration is 12.5
+m/s². Level cruise with that drag requires a total specific force of roughly
+15.9 m/s², within the nominal 24.525 m/s² thrust cap. Actual feasibility
+also depends on transient tilt, mass, actuator lag and flight boundary.
 
-Initial pursuer velocity can be generated using `initial_pursuer_heading`, `initial_pursuer_speed`, and `trimmed_initialization`. Tail means the pursuer is behind the target on its current travel heading; head-on means it is in front and initially moving opposite the target. Random generates randomized geometry and heading. These are initial conditions, not a guarantee that every trajectory is dynamically reachable. Auditing reachable trajectories and failure causes is required.
+## Stages and geometry
 
-## Commands
+`configs/first_entry_highspeed/plan.json` contains 13 stages. Bands:
+static (1), 3–8 m/s low (2–4), 15–20 m/s medium (5–7),
+40–45 m/s high (8–10), 45–50 m/s extreme (11–13).
+Each moving band covers tail, head-on and randomized geometry.
 
-```bash
-# Run reference guidance on a selected phase.
-python main.py evaluate --reference --config configs/first_entry_highspeed/01_static.json \
-  --episodes 64 --out runs/highspeed/01_static_teacher.json --device cuda
+A `tail` reset places the pursuer behind the moving target, initially
+aligned in heading; `head_on` places it ahead with opposing velocities.
+Random produces randomized relative geometry and target acceleration
+patterns. The initial-speed bands, initial distances and horizons differ
+deliberately; **some sampled high-speed encounters may still be dynamically
+unreachable**, and a physics feasibility prescreen must precede claims of
+algorithmic failure. The speed range is enforced in the random target's
+latent velocity reference; actual velocity may lag slightly during turns.
 
-# Train an independent phase or the ordered curriculum.
-python main.py train --config configs/first_entry_highspeed/01_static.json \
-  --out runs/highspeed/01_static --device cuda
-python main.py curriculum --plan configs/first_entry_highspeed/plan.json \
-  --out runs/highspeed/curriculum --device cuda --episodes 64 --minimum-success 0.8
+The high-speed profiles use `trimmed_initialization`: initial pose and
+mass-normalized thrust compensate modeled drag at the sampled speed. The
+initializer raises if sampled cruise thrust exceeds the 2.5g/nominal-thrust
+envelope. Domain randomization varies drag, mass ratio and actuator
+response in a limited range.
 
-# Final evaluation: reserve unseen seeds and compare PN, PD, policy.
-```
+## Learning method
 
-The phase budgets are **upper bounds**, not measured convergence values. They range from 12 million physics ticks for simple initial states to 220 million for the most difficult randomized stage; curriculum gates may promote earlier. Compare three or more seeds, report wall time, PPO update count, decision transitions, success and unsafe-entry rates.
+PPO uses an asymmetric Actor/Critic, with current oracle relative target
+state and current CTBR actuator state as Actor features. A causal LSTM
+predictor is supported and trained online. There is **no perception noise
+model yet**. Critic may see environment parameters, random target-command
+latents, and task parameters.
 
-## Transfer and reproducibility
+Reference teachers are `pd`, `pn` and `pn_hybrid`. PN uses line-of-sight
+angular rate plus a longitudinal speed schedule, transitioning toward PD
+close to the terminal sphere. The teacher provides BC samples or a **separate
+evaluation baseline**; PPO's commands are never blended with teacher output.
 
-Changing drag, thrust, rewards, position caps or policy inputs changes the direct-CTBR checkpoint interface. Do **not** `--resume` or `--init-from` a low-speed checkpoint into these profiles. Start a new model in the shared high-speed contract or explicitly use `--actor-init-from PATH` for architecture-compatible warm-start. The latter copies only Actor MLP weights, retaining new task-specific Critic, ValueNorm, exploration statistics and optimizer state; source and destination must have identical observation and action dimensions. It does not certify that the source policy works at new speeds. Preserve all existing low-speed config files.
+The first-entry reward contains bounded distance progress, distance-dependent
+braking, near-target relative-speed regularization, time penalty, action
+smoothness, attitude/rate regularization, terminal success and failure.
+Selection/gates rely on **actual first-entry success rate**, not reward
+alone or sustained-position tail RMSE.
 
-The reference controller supports `training.teacher_method` = `pd`, `pn`, or `pn_hybrid`. No guidance commands are mixed into the learned action during PPO. A successful PN baseline does not establish learnability or generalization.
+## Reproducibility / evaluation
 
-## Physics limits
+Use three or more training seeds. Preserve checkpoints, configurations,
+source SHA, rollout/physics-step counts, PPO update counts and wall-clock
+statistics. Always evaluate teacher/BC/PPO on equal test seeds and the
+same physics+task contract. Report full reason categories, mean entry
+velocity, entry time, minimum distance and fraction of unsafe crossings.
+Use held-out target trajectories/initial conditions for final reporting.
+The budgets in the plan (12 million to 220 million physics ticks) are
+**candidate upper limits** and not evidence of convergence.
 
-2.5g is defined here as total specific thrust divided by gravitational acceleration, not 2.5g *horizontal acceleration*. Maximum speed and tilt remain separate safety checks. Mass randomization also clips commanded actual load. Steady cruise feasibility depends on drag and tilt; the trimmed initializer raises if its requested steady state cannot be achieved.
+For smoke testing, reduce physics budget with `train --physics-steps`
+in a newly created output directory. The `curriculum` launcher enforces a
+minimum budget of two full deadlines per environment.
 
-Optional first-stage Actor-only warm start from an earlier compatible checkpoint:
-```bash
-python main.py train --config configs/first_entry_highspeed/01_static.json \\
-  --actor-init-from runs/legacy/checkpoints/best.pt --out runs/v71_actor_warmstart --device cuda
-```
+## Compatibility
 
-## Geometric baseline comparison
+Only checkpoints created by this v8 first-entry code can be loaded.
+There is no `migrate` command, no sustained-tail goal, no old v700/v701
+code path, and no old Survey experiment. All branch history remains in Git.
 
-Use the same seeds and profile for each baseline:
-```bash
-python main.py evaluate --reference --reference-method pd --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pd_high_tail.json --device cuda
-python main.py evaluate --reference --reference-method pn --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pn_high_tail.json --device cuda
-python main.py evaluate --reference --reference-method pn_hybrid --config configs/first_entry_highspeed/08_high_tail.json --episodes 256 --seed 870001 --out runs/pn_hybrid_high_tail.json --device cuda
-```
-The geometry guidance is a reference only and does not blend its commands into the direct-CTBR PPO action.
+The first complete high-speed training experiments have **not** been run as
+part of this refactor, and simulated parameters must be calibrated before
+real-flight use.
