@@ -1,4 +1,4 @@
-"""Capability screening, small difficulty increments, and retained-skill gates."""
+"""First-entry capability screening, staged promotion, and retained-skill gates."""
 
 import copy
 import hashlib
@@ -11,7 +11,7 @@ from .evaluation import evaluate
 from .errors import ExperimentGateError
 from .selection import summary as selection_summary
 
-SCHEMA = "pursuit-direct-ctbr-curriculum-v4"
+SCHEMA = "pursuit-first-entry-curriculum-v1"
 
 
 def digest(path):
@@ -52,35 +52,21 @@ def gate(
         if fail_fast and not item["passed"]:
             return finish(False, False, "current_task_failed")
 
-    relative = plan.get("retention_rmse_relative_budget", 0.2)
-    slack = plan.get("retention_rmse_absolute_slack_m", 0.05)
-    # A failed current task can never be promoted. Full final audit can still
-    # request retention reports; periodic/prescreen checks return immediately.
+    # Retained-skill gates use first-entry success, not legacy tail positioning.
     for anchor in sentinels:
         for reference in anchor["reference"]:
             report, _ = evaluate(model, anchor["config"], episodes, reference["seed"])
-            write_json(
-                directory / "retention" / f"{anchor['name']}_{reference['seed']}.json",
-                report,
-            )
-            rmse = report["mean_tail_position_rmse"]
-            first_entry = anchor["config"]["task"].get("objective") == "first_entry"
-            bound = (
-                None if first_entry
-                else reference["tail_rmse"] * (1 + relative) + slack
-            )
+            write_json(directory / "retention" / f"{anchor['name']}_{reference['seed']}.json", report)
             item = dict(
-                task=anchor["name"],
-                seed=reference["seed"],
+                task=anchor["name"], seed=reference["seed"],
                 success_rate=report["success_rate"],
-                tail_rmse=rmse,
-                rmse_budget=bound,
-                passed=report["success_rate"] >= minimum_success
-                and (first_entry or (rmse is not None and rmse <= bound)),
+                unsafe_entry_rate=report["unsafe_entry_rate"],
+                passed=report["success_rate"] >= minimum_success,
             )
             retained.append(item)
             if fail_fast and not item["passed"]:
                 return finish(False, False, "retained_skill_failed")
+    return finish(False, False, "retained_skill_failed")
     return finish(
         all(r["passed"] for r in current) and all(r["passed"] for r in retained)
     )
@@ -116,11 +102,6 @@ def run(
             raise ValueError(
                 "Each curriculum gate requires at least two distinct validation seeds"
             )
-    if (
-        plan.get("retention_rmse_relative_budget", 0.2) < 0
-        or plan.get("retention_rmse_absolute_slack_m", 0.05) < 0
-    ):
-        raise ValueError("Invalid retention precision budget")
     names = [p["name"] for p in plan["phases"]]
     if (
         not names
@@ -341,19 +322,8 @@ def run(
             reference = []
             for offset in plan.get("retention_seed_offsets", [89000, 189000]):
                 report, _ = evaluate(model, c, episodes, offset + seed)
-                if (
-                    c["task"].get("objective") != "first_entry"
-                    and report["mean_tail_position_rmse"] is None
-                ):
-                    raise RuntimeError(
-                        "Retained-skill anchor requires complete tail observations"
-                    )
                 write_json(directory / f"anchor_reference_{offset + seed}.json", report)
-                reference.append(
-                    dict(
-                        seed=offset + seed, tail_rmse=report["mean_tail_position_rmse"]
-                    )
-                )
+                reference.append(dict(seed=offset + seed))
             sentinels.append(dict(name=phase["name"], config=c, reference=reference))
         recent = c
         parent = best
