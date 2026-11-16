@@ -192,7 +192,7 @@ def evaluate(
             else "stochastic" if stochastic else "deterministic"
         ),
         success_definition=(
-            "First safe entry into the 3D target sphere at or before deadline"
+            "First 3D sphere entry with configured relative speed and no physical failure"
             if first_entry else
             "Safe until full deadline; tail within-radius fraction and relative-velocity RMSE pass configured thresholds"
         ),
@@ -237,6 +237,9 @@ def evaluate(
             mean_entry_time_s=tail_mean("entry_time_s", hits),
             mean_entry_relative_speed_mps=tail_mean("entry_relative_speed_mps", hits),
             mean_minimum_distance_m=mean("minimum_distance"),
+            entry_relative_speed_limit_mps=c["task"].get("entry_relative_speed_max_mps"),
+            unsafe_entry_count=sum(r["reason"] == "unsafe_entry" for r in records),
+            unsafe_entry_rate=sum(r["reason"] == "unsafe_entry" for r in records) / episodes,
         )
         report["precision_passed"] = None
     if not first_entry and c["task"]["kind"] == "cruise":

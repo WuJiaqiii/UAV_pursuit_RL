@@ -234,10 +234,10 @@ class CTBRBatch:
             cruise_force[:, 2] -= p["gravity"]
             thrust = norm(cruise_force)
             max_load = p.get("max_load_factor_g")
-            feasible = thrust <= min(
-                p["thrust_max"],
-                float("inf") if max_load is None else max_load * p["gravity"] * u.mass_ratio
-            ) + 1e-4
+            upper = torch.full_like(thrust, p["thrust_max"])
+            if max_load is not None:
+                upper = torch.minimum(upper, max_load * p["gravity"] * u.mass_ratio)
+            feasible = thrust <= upper + 1e-4
             if not bool(feasible[mask].all()):
                 raise ValueError("Trimmed cruise exceeds available load/thrust envelope")
             b3 = -cruise_force / thrust[:, None].clamp_min(1e-8)

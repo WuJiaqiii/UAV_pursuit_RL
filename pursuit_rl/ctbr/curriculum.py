@@ -64,7 +64,11 @@ def gate(
                 report,
             )
             rmse = report["mean_tail_position_rmse"]
-            bound = reference["tail_rmse"] * (1 + relative) + slack
+            first_entry = anchor["config"]["task"].get("objective") == "first_entry"
+            bound = (
+                None if first_entry
+                else reference["tail_rmse"] * (1 + relative) + slack
+            )
             item = dict(
                 task=anchor["name"],
                 seed=reference["seed"],
@@ -72,8 +76,7 @@ def gate(
                 tail_rmse=rmse,
                 rmse_budget=bound,
                 passed=report["success_rate"] >= minimum_success
-                and rmse is not None
-                and rmse <= bound,
+                and (first_entry or (rmse is not None and rmse <= bound)),
             )
             retained.append(item)
             if fail_fast and not item["passed"]:
@@ -338,7 +341,10 @@ def run(
             reference = []
             for offset in plan.get("retention_seed_offsets", [89000, 189000]):
                 report, _ = evaluate(model, c, episodes, offset + seed)
-                if report["mean_tail_position_rmse"] is None:
+                if (
+                    c["task"].get("objective") != "first_entry"
+                    and report["mean_tail_position_rmse"] is None
+                ):
                     raise RuntimeError(
                         "Retained-skill anchor requires complete tail observations"
                     )
