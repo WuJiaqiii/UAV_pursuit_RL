@@ -65,7 +65,7 @@ def guidance_acceleration(env):
     desired_closing = torch.sqrt(
         2.0 * braking * (distance - task["radius"]).clamp_min(0.0)
     )
-    along = (closing - desired_closing) * los
+    along = (desired_closing - closing) * los
     pn = limit(pn_lateral + 2.0 * along + a_target, maximum)
     if method == "pn":
         return pn

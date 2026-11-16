@@ -154,3 +154,19 @@ def test_first_entry_retention_uses_success_not_tail_rmse(tmp_path, monkeypatch)
     result = gate(None, c, anchors, tmp_path, 4, 42, 0.9, plan, "test")
     assert result["passed"]
     assert result["retention"][0]["rmse_budget"] is None
+
+def test_pn_brakes_excessive_closing_speed():
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["training"]["teacher_method"] = "pn"
+    c["training"]["teacher_accel_limit"] = 24.0
+    env = CTBRBatch(c, n=1)
+    u, target = env.plant.pursuer, env.plant.target
+    target.pos.zero_()
+    target.vel.zero_()
+    target.acc.zero_()
+    u.pos.zero_()
+    u.pos[0, 0] = -2.0
+    u.vel.zero_()
+    u.vel[0, 0] = 20.0
+    acceleration = guidance_acceleration(env)
+    assert acceleration[0, 0] < 0, "PN longitudinal feedback must brake excessive closing"
