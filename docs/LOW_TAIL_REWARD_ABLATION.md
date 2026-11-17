@@ -91,12 +91,12 @@ training budget and validation protocol.
 ## Budget and evaluation
 
 Screening: one seed (42), 4 million aggregate physics steps, 32-episode
-validation every 1 million steps, 8 MC episodes, 400 Critic warm-up updates,
+validation every 1 million steps, 8 MC episodes, 400 Critic warm-up updates, no periodic MC correction,
 and 64-episode final reports on two held-out seed offsets, plus static-task retention checks on two additional seed offsets.
 
 Full confirmation: seeds 42/43/44, 20 million aggregate physics steps per run,
 32-episode validation every 4 million steps, 16 MC episodes, 600 Critic
-warm-up updates, and 128-episode final reports on each of two held-out current-task seeds and two retained-static-task seeds.
+warm-up updates, 16-step MC Critic corrections every 32 PPO updates, and 128-episode final reports on each of two held-out current-task seeds and two retained-static-task seeds.
 PPO training physics steps, imitation interactions, MC interactions and
 validation interactions are recorded separately. Screening is for ranking
 only; do not claim a method passes the curriculum from one seed.
@@ -123,7 +123,7 @@ variants and run full confirmation:
 python scripts/run_reward_ablation.py \
   --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
   --out runs/low_tail_reward_ablation_full \
-  --stage full --variants baseline_pd_bc no_braking_pd_bc no_entry_velocity_pd_bc \
+  --stage full --variants baseline_pd_bc baseline_no_bc no_braking_pd_bc no_entry_velocity_pd_bc \
   --device cuda
 ```
 
