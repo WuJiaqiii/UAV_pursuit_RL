@@ -152,3 +152,19 @@ def test_factorial_plan_build_configs_and_gate_policy():
     no_bc_config, _ = build_configs(plan, no_bc, "screening", 42, "cpu")
     assert no_bc_config["training"]["bc_updates"] == 0
     assert no_bc_config["training"]["bc_rounds"] == 1
+
+def test_checkpoint_loader_accepts_v8_config_without_bc_rounds(tmp_path):
+    from pursuit_rl.ctbr.checkpoint import save, load as load_checkpoint
+    from pursuit_rl.ctbr.config import fingerprint
+
+    config = _quick_config()
+    model = new_model(config, optimizers=False)
+    path = tmp_path / "legacy_v8_without_bc_rounds.pt"
+    save(path, model, config, {"physics_steps": 0}, "legacy_compatible")
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    data["config"]["training"].pop("bc_rounds")
+    data["fingerprint"] = fingerprint(data["config"])
+    torch.save(data, path)
+
+    _, restored, _ = load_checkpoint(path)
+    assert restored["training"]["bc_rounds"] == 1

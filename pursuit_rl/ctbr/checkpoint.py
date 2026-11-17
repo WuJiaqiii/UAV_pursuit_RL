@@ -126,7 +126,15 @@ def load(path, device=None, optimizers=False):
             "Unsupported checkpoint: this first-entry-only build does not load old versions"
         )
     c = validate(merge(copy.deepcopy(DEFAULT), data["config"]))
-    if fingerprint(c) != data["fingerprint"] or interface(c) != data["interface"]:
+    config_fingerprint_matches = fingerprint(c) == data["fingerprint"]
+    # v8 checkpoints created before bc_rounds was introduced omit that field.
+    # The new default is one round, so accept only the exact legacy fingerprint
+    # obtained by removing this single newly-added default field.
+    if not config_fingerprint_matches and "bc_rounds" not in data["config"].get("training", {}):
+        legacy_config = copy.deepcopy(c)
+        legacy_config["training"].pop("bc_rounds", None)
+        config_fingerprint_matches = fingerprint(legacy_config) == data["fingerprint"]
+    if not config_fingerprint_matches or interface(c) != data["interface"]:
         raise ValueError("Corrupt or mismatched first-entry checkpoint contract")
     if device is not None:
         c["device"] = device

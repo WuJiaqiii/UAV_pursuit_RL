@@ -149,6 +149,7 @@ def main(argv=None):
     if not parent.is_file():
         raise FileNotFoundError(f"Parent checkpoint not found: {parent}")
     parent_sha256 = hashlib.sha256(parent.read_bytes()).hexdigest()
+    plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
     commit_sha = git_revision()
     variants = {item["name"]: item for item in plan["variants"]}
     default_key = f"default_{args.stage}_variants"
@@ -167,14 +168,20 @@ def main(argv=None):
                 f"Experiment matrix already exists; use --resume-existing: {matrix_path}"
             )
         matrix = json.loads(matrix_path.read_text(encoding="utf8"))
-        if matrix.get("stage") != args.stage or matrix.get("parent_sha256") != parent_sha256:
-            raise ValueError("Existing matrix stage or parent checkpoint does not match")
+        if (
+            matrix.get("stage") != args.stage
+            or matrix.get("parent_sha256") != parent_sha256
+            or matrix.get("plan_sha256") != plan_sha256
+        ):
+            raise ValueError(
+                "Existing matrix stage, plan, or parent checkpoint does not match"
+            )
     else:
         matrix = {
             "schema": plan["schema"],
             "stage": args.stage,
             "plan": str(plan_path),
-            "plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+            "plan_sha256": plan_sha256,
             "parent_checkpoint": str(parent),
             "parent_sha256": parent_sha256,
             "commit_sha": commit_sha,
@@ -195,13 +202,16 @@ def main(argv=None):
     for name in selected:
         variant = variants[name]
         for seed in seeds:
+            enforce_gate = args.enforce_initialization_gate or (
+                plan["schema"] == "pursuit-first-entry-reward-ablation-v1"
+            )
             config, replay = build_configs(
                 plan,
                 variant,
                 args.stage,
                 seed,
                 args.device,
-                enforce_initialization_gate=args.enforce_initialization_gate,
+                enforce_initialization_gate=enforce_gate,
             )
             run_dir = root / name / f"seed_{seed}"
             mix = _task_mix(config, replay)
@@ -219,7 +229,7 @@ def main(argv=None):
                 "ppo_physics_steps_budget": config["training"]["physics_steps"],
                 "bc_updates_total": config["training"]["bc_updates"],
                 "bc_rounds": config["training"]["bc_rounds"],
-                "initialization_gate_enforced": args.enforce_initialization_gate,
+                "initialization_gate_enforced": enforce_gate,
                 "initialization_success_floor": config["training"]["initialization_success_floor"],
                 "task_mix": mix,
                 "reward": copy.deepcopy(config["reward"]),
@@ -311,7 +321,11 @@ def main(argv=None):
                     "task_environment_counts": training_summary["task_environment_counts"],
                     "stop_reason": training_summary["stop_reason"],
                     "checkpoint": str(run_dir / "checkpoints" / "best_current.pt"),
-                    "initialization_report": str(run_dir / "initialization_bc.json"),
+                    "initialization_report": (
+                        str(run_dir / "initialization_bc.json")
+                        if training_summary["bc_updates"] > 0
+                        else None
+                    ),
                 }
                 if ppo_complete:
                     checkpoint = run_dir / "checkpoints" / "best_current.pt"

@@ -30,6 +30,8 @@ The hard first-entry definition, 0.5 m entry radius, 15 m/s relative-speed limit
 
 The default Full set contains the baseline two-round DAgger variant, one-round DAgger control, no-BC control, no-braking variant, and no-entry-velocity variant. If screening shows a progress=12 variant is materially stronger, replace one of the two reward-ablation variants with that candidate using `--variants`.
 
+The screening campaign allocates 56 million PPO physics steps across 14 single-seed runs. The default Full campaign allocates 300 million PPO physics steps across five variants and three seeds. These are aggregate environment-interaction budgets, not wall-clock estimates; the runner executes runs sequentially to avoid competing GPU jobs.
+
 The `physics_steps` budget is **PPO rollout physics interactions only**. The following are tracked separately and do not consume the PPO budget:
 
 - DAgger/BC state-collection interactions;
