@@ -84,6 +84,7 @@ DEFAULT = {
         "critic_updates": 600,
         "bc_samples": 40000,
         "bc_updates": 0,
+        "bc_rounds": 1,
         "bc_stride": 2,
         "bc_segment_seconds": 0.5,
         "initialization_episodes": 32,
@@ -217,6 +218,10 @@ def validate(c):
     for key in ("physics_steps", "bc_updates", "critic_updates", "mc_calibration_every_updates", "mc_calibration_updates"):
         if type(tr[key]) is not int or tr[key] < 0:
             raise ValueError(f"Invalid training.{key}")
+    if type(tr["bc_rounds"]) is not int or tr["bc_rounds"] < 1:
+        raise ValueError("Invalid training.bc_rounds")
+    if tr["bc_updates"] > 0 and tr["bc_rounds"] > tr["bc_updates"]:
+        raise ValueError("training.bc_rounds cannot exceed bc_updates")
     for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "initialization_episodes"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError(f"Invalid training.{key}")

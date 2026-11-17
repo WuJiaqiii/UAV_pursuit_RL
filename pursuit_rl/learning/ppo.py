@@ -262,6 +262,23 @@ class AsymmetricPPO(nn.Module):
                 raise FloatingPointError(
                     "Nonfinite rollout fields before PPO update: " + ", ".join(bad)
                 )
+            if guard:
+                magnitude_limits = {
+                    "values": "value_abs_threshold",
+                    "next_values": "value_abs_threshold",
+                    "bootstrap_values": "value_abs_threshold",
+                    "delta": "target_abs_threshold",
+                    "advantage": "advantage_abs_threshold",
+                    "returns": "target_abs_threshold",
+                }
+                for field, limit_key in magnitude_limits.items():
+                    maximum = rollout_diagnostics[field]["max_abs"]
+                    limit = options[limit_key]
+                    if maximum is not None and maximum > limit:
+                        raise FloatingPointError(
+                            f"Rollout field {field!r} max_abs={maximum:.6g} "
+                            f"exceeds configured limit {limit:.6g}"
+                        )
         # Enforce the configured lower bound even if KL stopping skips updates.
         with torch.no_grad():
             self.log_std.clamp_(
@@ -526,4 +543,37 @@ class AsymmetricPPO(nn.Module):
                 raise FloatingPointError(
                     "Nonfinite critic predictions after PPO update"
                 )
+            post_value_max = diagnostics["post_update_values"]["max_abs"]
+            if (
+                guard
+                and post_value_max is not None
+                and post_value_max > options["value_abs_threshold"]
+            ):
+                raise FloatingPointError(
+                    "Post-update Critic prediction max_abs="
+                    f"{post_value_max:.6g} exceeds configured limit "
+                    f"{options['value_abs_threshold']:.6g}"
+                )
+            if guard and stats["critic_loss_max"] > options["critic_loss_threshold"]:
+                raise FloatingPointError(
+                    "PPO critic_loss_max="
+                    f"{stats['critic_loss_max']:.6g} exceeds configured limit "
+                    f"{options['critic_loss_threshold']:.6g}"
+                )
+            gradient_max = max(
+                stats["actor_grad_norm_max"], stats["critic_grad_norm_max"]
+            )
+            if guard and gradient_max > options["gradient_norm_threshold"]:
+                raise FloatingPointError(
+                    "PPO gradient norm="
+                    f"{gradient_max:.6g} exceeds configured limit "
+                    f"{options['gradient_norm_threshold']:.6g}"
+                )
+            for metric, metric_value in stats.items():
+                if isinstance(metric_value, (float, int)) and not math.isfinite(
+                    float(metric_value)
+                ):
+                    raise FloatingPointError(
+                        f"Nonfinite PPO metric after update: {metric}"
+                    )
         return stats

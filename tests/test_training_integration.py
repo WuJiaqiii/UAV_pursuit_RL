@@ -200,7 +200,7 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     child["task"].update(duration=0.02, distance=[0.65, 0.75])
     child["training"].update(
         physics_steps=32, rollout_steps=8, batch_size=8, epochs=1,
-        bc_updates=2, bc_samples=8, bc_stride=1, bc_segment_seconds=0.01,
+        bc_updates=2, bc_rounds=2, bc_samples=8, bc_stride=1, bc_segment_seconds=0.01,
         initialization_episodes=2, initialization_success_floor=0.0,
         critic_updates=0, mc_episodes=2, validation_episodes=2,
         validation_every=16, mc_calibration_every_updates=0,
@@ -211,7 +211,9 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     result = train(validate(child), tmp_path / "transfer_bc", init_from=parent_path)
     assert result["bc_updates"] == 2
     assert result["accepted_bc_updates"] == 2
+    assert result["bc_rounds_completed"] == 2
     assert result["imitation_physics_steps"] > 0
+    assert (tmp_path / "transfer_bc/initialization_bc_round_01.json").exists()
     assert (tmp_path / "transfer_bc/initialization_bc.json").exists()
     assert (tmp_path / "transfer_bc/checkpoints/bc_initial.pt").exists()
     assert (tmp_path / "transfer_bc/checkpoints/latest.pt").exists()
@@ -222,6 +224,7 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     bc = next(row for row in rows if row["event"] == "bc")
     assert bc["mode"] == "dagger_actor_states"
     assert bc["teacher_method"] == "pd"
+    assert bc["rounds"] == 2
 
  
 def test_reward_ablation_matrix_uses_full_teacher_approach_and_matched_replay():

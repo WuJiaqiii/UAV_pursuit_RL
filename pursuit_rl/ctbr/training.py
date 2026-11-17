@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import numbers
 from pathlib import Path
 import torch
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
@@ -19,10 +20,26 @@ from .mixture import training_env, target_positions
 from pursuit_rl.learning.prediction import supervised_windows, fit_predictor
 
 
+def _assert_finite_json(value, path="event"):
+    """Fail with the exact nested metric path instead of a generic JSON error."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _assert_finite_json(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_finite_json(item, f"{path}[{index}]")
+    elif isinstance(value, numbers.Real) and not isinstance(value, bool):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Non-finite JSON number at {path}: {number!r}")
+
+
 def emit(root, event, **fields):
     row = dict(event=event, **fields)
+    _assert_finite_json(row)
+    serialized = json.dumps(row, allow_nan=False)
     with (root / "metrics.jsonl").open("a") as f:
-        f.write(json.dumps(row, allow_nan=False) + "\n")
+        f.write(serialized + "\n")
     print(
         json.dumps(
             {k: v for k, v in row.items() if k not in ("diagnostics", "parent")},
@@ -140,6 +157,76 @@ def initialization_validation(model, c, root, progress, label):
     return report
 
 
+def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset):
+    """Run one or more DAgger rounds; BC updates are divided across rounds."""
+    tr = c["training"]
+    total_updates = tr["bc_updates"]
+    rounds = tr.get("bc_rounds", 1)
+    if total_updates <= 0:
+        return ("transfer_initial" if transfer else "random_initial"), None
+    updates_per_round = [
+        total_updates // rounds + int(index < total_updates % rounds)
+        for index in range(rounds)
+    ]
+    total_samples = 0
+    total_interactions = 0
+    last_loss = None
+    report = None
+    for index, round_updates in enumerate(updates_per_round):
+        states, labels, interactions = imitation_data(
+            c,
+            model=model if transfer else None,
+            seed=c["seed"] + seed_offset + index * 100003,
+        )
+        last_loss = fit_actor(model, (states, labels), round_updates, tr["batch_size"])
+        total_samples += len(states)
+        total_interactions += interactions
+        progress["bc_updates"] += round_updates
+        progress["accepted_bc_updates"] += round_updates
+        progress["imitation_physics_steps"] += interactions
+        progress["bc_rounds_completed"] += 1
+        save(
+            ckpt / f"bc_round_{index + 1:02d}.pt",
+            model,
+            c,
+            progress,
+            "transfer_bc_initial" if transfer else "bc_initial",
+        )
+        label = "bc" if index == rounds - 1 else f"bc_round_{index + 1:02d}"
+        report = initialization_validation(model, c, root, progress, label)
+        emit(
+            root,
+            "bc_round",
+            mode="dagger_actor_states" if transfer else "teacher_rollout_states",
+            teacher_method=tr["teacher_method"],
+            round=index + 1,
+            rounds=rounds,
+            loss=last_loss,
+            samples=len(states),
+            interactions_physics_steps=interactions,
+            updates=round_updates,
+            initialization_success_rate=report["success_rate"],
+            loss_space="standardized_action_mse",
+        )
+        del states, labels
+    origin = "transfer_bc_initial" if transfer else "bc_initial"
+    save(ckpt / "bc_initial.pt", model, c, progress, origin)
+    emit(
+        root,
+        "bc",
+        mode="dagger_actor_states" if transfer else "teacher_rollout_states",
+        teacher_method=tr["teacher_method"],
+        rounds=rounds,
+        loss=last_loss,
+        samples=total_samples,
+        interactions_physics_steps=total_interactions,
+        updates=total_updates,
+        initialization_success_rate=report["success_rate"],
+        loss_space="standardized_action_mse",
+    )
+    return origin, report
+
+
 def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None):
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
@@ -185,6 +272,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         best_feasible_origin=None,
         best_feasible_improved_over_initial=False,
         critic_needs_calibration=False,
+        bc_rounds_completed=0,
     )
     if resume:
         model, old, saved = load(resume, c["device"], optimizers=True)
@@ -245,35 +333,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             origin = "transfer_initial"
             del parent
             if tr["bc_updates"]:
-                # DAgger-style transfer adaptation: visit states with the
-                # inherited Actor, but label every sampled state with the
-                # current phase's geometric teacher.
-                x, y, interactions = imitation_data(
-                    c, model=model, seed=c["seed"] + 20000
+                origin, bc_report = run_bc_initialization(
+                    c, model, root, ckpt, progress, transfer=True, seed_offset=20000
                 )
-                loss = fit_actor(
-                    model, (x, y), tr["bc_updates"], tr["batch_size"]
-                )
-                progress["bc_updates"] += tr["bc_updates"]
-                progress["accepted_bc_updates"] += tr["bc_updates"]
-                progress["imitation_physics_steps"] += interactions
-                origin = "transfer_bc_initial"
-                save(ckpt / "bc_initial.pt", model, c, progress, origin)
-                emit(
-                    root,
-                    "bc",
-                    mode="dagger_actor_states",
-                    teacher_method=tr["teacher_method"],
-                    loss=loss,
-                    samples=len(x),
-                    interactions_physics_steps=interactions,
-                    updates=tr["bc_updates"],
-                    loss_space="standardized_action_mse",
-                )
-                bc_report = initialization_validation(
-                    model, c, root, progress, "bc"
-                )
-                del x, y
                 if bc_report["success_rate"] < tr["initialization_success_floor"]:
                     details = dict(
                         event="initialization_gate_failed",
@@ -289,7 +351,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     write_json(root / "gate_failure.json", details)
                     raise ExperimentGateError(details)
         else:
-            origin = "bc_initial" if tr["bc_updates"] else "random_initial"
+            origin = "random_initial"
             # The teacher uses only current kinematics (first 21 features).
             with torch.no_grad():
                 model.actor[0].weight[:, 21:] = 0
@@ -297,21 +359,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     model.actor[-1].weight.zero_()
                     model.actor[-1].bias.zero_()
             if tr["bc_updates"]:
-                x, y, interactions = imitation_data(c, seed=c["seed"] + 10000)
-                loss = fit_actor(model, (x, y), tr["bc_updates"], tr["batch_size"])
-                progress["bc_updates"] += tr["bc_updates"]
-                progress["accepted_bc_updates"] += tr["bc_updates"]
-                progress["imitation_physics_steps"] += interactions
-                save(ckpt / "bc_initial.pt", model, c, progress, origin)
-                emit(
-                    root,
-                    "bc",
-                    loss=loss,
-                    samples=len(x),
-                    loss_space="standardized_action_mse",
+                origin, bc_report = run_bc_initialization(
+                    c, model, root, ckpt, progress, transfer=False, seed_offset=10000
                 )
-                bc_report = initialization_validation(model, c, root, progress, "bc")
-                del x, y
                 if bc_report["success_rate"] < tr["initialization_success_floor"]:
                     details = dict(
                         event="initialization_gate_failed",
@@ -437,17 +487,17 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
         for tick in range(ticks):
             try:
-                action, raw, lp, value = model.sample_tensor(obs, priv)
+                action, raw, lp, value_pred = model.sample_tensor(obs, priv)
                 (nobs, npriv), reward, term, trunc, completed = env.step(action, raw)
                 prediction_positions[tick] = target_positions(env).float()
                 rollout_physics_steps += env.last_physics_steps
                 component_slots += env.n
                 scaled_total = torch.zeros_like(reward)
                 unscaled_total = torch.zeros_like(reward)
-                for value in env.reward_components.values():
-                    scaled_total += value
-                for value in env.reward_components_unscaled.values():
-                    unscaled_total += value
+                for component in env.reward_components.values():
+                    scaled_total += component
+                for component in env.reward_components_unscaled.values():
+                    unscaled_total += component
                 reward_component_residual_max = torch.maximum(
                     reward_component_residual_max, (scaled_total - reward).abs().max()
                 )
@@ -455,19 +505,19 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     reward_scale_residual_max,
                     (scaled_total - unscaled_total * c["reward"]["scale"]).abs().max(),
                 )
-                for key, value in env.reward_components.items():
+                for key, component in env.reward_components.items():
                     component_scaled_sums[key] = (
                         component_scaled_sums.get(
                             key, torch.zeros((), device=env.device)
                         )
-                        + value.detach().sum()
+                        + component.detach().sum()
                     )
-                for key, value in env.reward_components_unscaled.items():
+                for key, component in env.reward_components_unscaled.items():
                     component_unscaled_sums[key] = (
                         component_unscaled_sums.get(
                             key, torch.zeros((), device=env.device)
                         )
-                        + value.detach().sum()
+                        + component.detach().sum()
                     )
             except Exception as exc:
                 if not (root / "first_anomaly.pt").exists():
@@ -494,7 +544,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 ("priv", priv),
                 ("raw", raw),
                 ("logprob", lp),
-                ("values", value),
+                ("values", value_pred),
                 ("reward", reward),
                 ("terminated", term),
                 ("truncated", trunc),
@@ -613,9 +663,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             reward_scale_residual_max=float(reward_scale_residual_max.item()),
             reward_components={
                 name: dict(
-                    scaled_sum=float(value.item()),
+                    scaled_sum=float(component_sum.item()),
                     scaled_mean_per_allocated_transition=(
-                        float(value.item()) / max(component_slots, 1)
+                        float(component_sum.item()) / max(component_slots, 1)
                     ),
                     unscaled_sum=float(component_unscaled_sums[name].item()),
                     unscaled_mean_per_allocated_transition=(
@@ -623,7 +673,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                         / max(component_slots, 1)
                     ),
                 )
-                for name, value in component_scaled_sums.items()
+                for name, component_sum in component_scaled_sums.items()
             },
         )
         interval = tr["mc_calibration_every_updates"]
