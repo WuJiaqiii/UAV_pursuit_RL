@@ -65,8 +65,13 @@ requires unchanged source and the original experiment directory.
 **Older v7 and earlier checkpoints are intentionally unsupported.** Historical
 source can be recovered from Git history, not the current working tree.
 
-See [experiment design](docs/HIGH_SPEED_FIRST_ENTRY.md) and
-[code architecture](docs/ARCHITECTURE.md).
+See [experiment design](docs/HIGH_SPEED_FIRST_ENTRY.md),
+[low-tail reward/transfer-BC ablation plan](docs/LOW_TAIL_REWARD_ABLATION.md),
+and [code architecture](docs/ARCHITECTURE.md).
+
+For the matched 02_low_tail reward ablation matrix, run
+`scripts/run_reward_ablation.py`; it requires a v8 parent checkpoint and
+writes an auditable `ablation_matrix.json`.
 
 ## Code map
 
