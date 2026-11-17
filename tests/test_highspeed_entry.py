@@ -245,6 +245,8 @@ def test_reward_ablation_plan_preserves_terminal_terms_and_has_factorial_control
     assert "no_entry_velocity_pd_bc" in variants
     assert "no_braking_no_entry_velocity_pd_bc" in variants
     assert "progress_only_diagnostic_pd_bc" in variants
+    assert len(plan["final_gate_seed_offsets"]) == 2
+    assert len(plan["retention_seed_offsets"]) == 2
     for variant in variants.values():
         reward = dict(plan["base_reward"])
         reward.update(variant.get("reward", {}))
