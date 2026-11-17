@@ -18,7 +18,6 @@ import torch
 
 from pursuit_rl.ctbr.checkpoint import load as load_checkpoint, write_json
 from pursuit_rl.ctbr.config import load, validate
-from pursuit_rl.ctbr.curriculum import SCHEMA as CURRICULUM_SCHEMA
 from pursuit_rl.ctbr.errors import ExperimentGateError
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.training import train

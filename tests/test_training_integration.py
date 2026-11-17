@@ -187,6 +187,7 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     )
 
     child = load("configs/first_entry_highspeed/02_low_tail.json")
+    child["prediction"]["enabled"] = False
     child["num_envs"] = 2
     child["task"].update(duration=0.02, distance=[0.65, 0.75])
     child["training"].update(

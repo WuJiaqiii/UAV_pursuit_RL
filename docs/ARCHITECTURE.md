@@ -34,8 +34,10 @@ rollouts use only Actor commands.
 
 **Contract isolation:** first-entry schema, observation geometry and the
 2.5g flight model form one interface shared by all thirteen profiles;
-stage-specific task parameters and budgets vary. Full model transfer
-requires an exact interface; prior version checkpoint loading is unsupported.
+stage-specific task parameters and budgets vary. Warm-start transfer preserves
+action, observation, physics, predictor and network contracts. Reward weights
+may vary for ablation experiments; the Critic is recalibrated under the new
+reward before PPO. Prior-version checkpoint loading is unsupported.
 
 **Metrics:** first successful safe sphere entry and unsafe crossings, time,
 velocity, distance, failure reason, control saturation and prediction RMSE.

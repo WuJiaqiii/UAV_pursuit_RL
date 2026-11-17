@@ -59,9 +59,10 @@ python scripts/plot_entry_trace.py runs/traces/trace_seed_42.npz \
   --slot 0 --out runs/trace_01.png
 ```
 
-`--init-from` accepts only *this v8 first-entry format* with identical
-policy, physics, reward and observation contracts. `--resume` additionally
-requires unchanged source and the original experiment directory.
+`--init-from` accepts a v8 first-entry checkpoint with identical action,
+observation, physics, predictor and network contracts. Reward weights may differ
+for controlled reward ablations; the Critic is recalibrated before PPO.
+`--resume` additionally requires unchanged source and the original experiment directory.
 **Older v7 and earlier checkpoints are intentionally unsupported.** Historical
 source can be recovered from Git history, not the current working tree.
 

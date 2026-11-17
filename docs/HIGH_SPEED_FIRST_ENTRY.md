@@ -88,3 +88,22 @@ code path, and no old Survey experiment. All branch history remains in Git.
 The first complete high-speed training experiments have **not** been run as
 part of this refactor, and simulated parameters must be calibrated before
 real-flight use.
+
+## Reward accounting and ablation
+
+The environment constructs raw per-physics reward components, multiplies each
+component by `reward.scale`, and returns their scaled sum to PPO. The
+decision-step reward components are aggregated using the same within-decision
+physics discount as the returned reward. Therefore
+`sum(env.reward_components.values())` equals the reward tensor stored in the
+PPO rollout. Raw component diagnostics are exposed separately as
+`reward_components_unscaled`. Per-episode scaled and unscaled accumulators
+are undiscounted physics-rate sums; evaluation Monte Carlo return is discounted
+at the decision rate and is a different quantity.
+
+Reward ablations may zero soft shaping weights such as braking, near-entry
+velocity, tilt, rate, action smoothness or time. They must not disable the
+first-entry radius, 15 m/s terminal relative-speed threshold, 2.5g thrust cap,
+60 m/s pursuer speed limit, configured attitude/workspace/altitude limits,
+or terminal completion/failure semantics. See
+`docs/LOW_TAIL_REWARD_ABLATION.md` for the matched experiment matrix.

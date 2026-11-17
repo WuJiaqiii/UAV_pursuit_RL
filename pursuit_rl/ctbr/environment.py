@@ -43,6 +43,8 @@ class CTBRBatch:
             self.n, config["prediction"]["history_steps"], 10, device=self.device
         )
         self.last_physics_steps = 0
+        self.reward_components = {}
+        self.reward_components_unscaled = {}
         self.finished = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.steps = torch.zeros(self.n, dtype=torch.long, device=self.device)
         self.center = torch.zeros(self.n, 3, device=self.device)
