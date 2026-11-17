@@ -163,6 +163,34 @@ def main(argv=None):
                         "failures": report["failures"],
                         "passed": passed,
                     })
+                retention_reports = []
+                retention_passed = True
+                for offset in plan["retention_seed_offsets"]:
+                    eval_seed = seed + offset
+                    report, _ = evaluate(
+                        model,
+                        replay,
+                        stage["final_eval_episodes"],
+                        eval_seed,
+                    )
+                    write_json(
+                        run_dir / "final" / f"retention_{eval_seed}.json",
+                        report,
+                    )
+                    passed = (
+                        report["success_rate"] >= plan["minimum_success"]
+                        and report["unsafe_entry_rate"] == 0.0
+                    )
+                    retention_passed &= passed
+                    retention_reports.append({
+                        "seed": eval_seed,
+                        "task": replay["task"]["name"],
+                        "success_rate": report["success_rate"],
+                        "unsafe_entry_rate": report["unsafe_entry_rate"],
+                        "failures": report["failures"],
+                        "passed": passed,
+                    })
+                final_passed &= retention_passed
                 row = {
                     "variant": name,
                     "seed": seed,
@@ -177,6 +205,8 @@ def main(argv=None):
                         "task_environment_counts"
                     ],
                     "final_evaluations": final_reports,
+                    "retention_evaluations": retention_reports,
+                    "retention_passed": retention_passed,
                     "final_gate_passed": final_passed,
                     "checkpoint": str(checkpoint),
                 }

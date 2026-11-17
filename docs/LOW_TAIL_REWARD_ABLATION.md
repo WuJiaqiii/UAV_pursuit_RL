@@ -92,11 +92,11 @@ training budget and validation protocol.
 
 Screening: one seed (42), 4 million aggregate physics steps, 32-episode
 validation every 1 million steps, 8 MC episodes, 400 Critic warm-up updates,
-and 64-episode final reports on two held-out seed offsets.
+and 64-episode final reports on two held-out seed offsets, plus static-task retention checks on two additional seed offsets.
 
 Full confirmation: seeds 42/43/44, 20 million aggregate physics steps per run,
 32-episode validation every 4 million steps, 16 MC episodes, 600 Critic
-warm-up updates, and 128-episode final reports on each of two held-out seeds.
+warm-up updates, and 128-episode final reports on each of two held-out current-task seeds and two retained-static-task seeds.
 PPO training physics steps, imitation interactions, MC interactions and
 validation interactions are recorded separately. Screening is for ranking
 only; do not claim a method passes the curriculum from one seed.

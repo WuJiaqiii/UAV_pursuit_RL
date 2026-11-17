@@ -164,5 +164,9 @@
         "time": 0
       }
     }
+  ],
+  "retention_seed_offsets": [
+    89000,
+    189000
   ]
 }
