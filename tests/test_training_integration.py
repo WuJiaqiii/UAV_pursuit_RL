@@ -1,6 +1,7 @@
 """End-to-end first-entry PPO, evaluation, checkpoint and curriculum tests."""
 import copy
 import json
+from pathlib import Path
 import pytest
 import torch
 from pursuit_rl.ctbr.config import DEFAULT, SCHEMA, load, validate
