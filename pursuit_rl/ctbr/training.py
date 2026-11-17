@@ -170,6 +170,8 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
     ]
     total_samples = 0
     total_interactions = 0
+    aggregated_states = []
+    aggregated_labels = []
     last_loss = None
     report = None
     for index, round_updates in enumerate(updates_per_round):
@@ -178,7 +180,13 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
             model=model if transfer else None,
             seed=c["seed"] + seed_offset + index * 100003,
         )
-        last_loss = fit_actor(model, (states, labels), round_updates, tr["batch_size"])
+        aggregated_states.append(states)
+        aggregated_labels.append(labels)
+        train_states = torch.cat(aggregated_states)
+        train_labels = torch.cat(aggregated_labels)
+        last_loss = fit_actor(
+            model, (train_states, train_labels), round_updates, tr["batch_size"]
+        )
         total_samples += len(states)
         total_interactions += interactions
         progress["bc_updates"] += round_updates
@@ -203,12 +211,13 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
             rounds=rounds,
             loss=last_loss,
             samples=len(states),
+            aggregated_training_samples=len(train_states),
             interactions_physics_steps=interactions,
             updates=round_updates,
             initialization_success_rate=report["success_rate"],
             loss_space="standardized_action_mse",
         )
-        del states, labels
+        del states, labels, train_states, train_labels
     origin = "transfer_bc_initial" if transfer else "bc_initial"
     save(ckpt / "bc_initial.pt", model, c, progress, origin)
     emit(

@@ -204,3 +204,53 @@ def test_factorial_launcher_dry_run_writes_matrix_without_starting_training(tmp_
     assert result["results"][0]["ppo_physics_steps_budget"] == 4_000_000
     assert (output / "ablation_matrix.json").is_file()
     assert not (output / "p6_b05_ev05" / "seed_42").exists()
+
+def test_dagger_rounds_retain_prior_round_labels(tmp_path, monkeypatch):
+    from pursuit_rl.ctbr.training import run_bc_initialization
+
+    config = _quick_config()
+    config["training"].update(bc_updates=2, bc_rounds=2)
+    model = new_model(config)
+    root = tmp_path
+    checkpoint_dir = root / "checkpoints"
+    checkpoint_dir.mkdir()
+    progress = {
+        "bc_updates": 0,
+        "accepted_bc_updates": 0,
+        "imitation_physics_steps": 0,
+        "bc_rounds_completed": 0,
+    }
+    fit_sizes = []
+
+    def fake_imitation_data(c, model=None, seed=0):
+        state = torch.full((2, model.obs_dim), float(seed % 1000))
+        label = torch.zeros((2, 4))
+        return state, label, 3
+
+    def fake_fit_actor(model, data, updates, batch_size):
+        fit_sizes.append((len(data[0]), updates))
+        return 0.0
+
+    def fake_validation(model, c, root, progress, label):
+        return {"success_rate": 1.0}
+
+    monkeypatch.setattr("pursuit_rl.ctbr.training.imitation_data", fake_imitation_data)
+    monkeypatch.setattr("pursuit_rl.ctbr.training.fit_actor", fake_fit_actor)
+    monkeypatch.setattr(
+        "pursuit_rl.ctbr.training.initialization_validation", fake_validation
+    )
+
+    origin, report = run_bc_initialization(
+        config,
+        model,
+        root,
+        checkpoint_dir,
+        progress,
+        transfer=True,
+        seed_offset=20000,
+    )
+    assert origin == "transfer_bc_initial"
+    assert report["success_rate"] == 1.0
+    assert fit_sizes == [(2, 1), (4, 1)]
+    assert progress["bc_rounds_completed"] == 2
+    assert progress["bc_updates"] == 2

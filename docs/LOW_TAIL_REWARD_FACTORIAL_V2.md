@@ -14,7 +14,7 @@ The screening plan is a complete (3\times2\times2) factorial:
 - Braking shaping: 0, 0.5.
 - Entry-velocity shaping: 0, 0.5.
 
-All 12 factorial variants use 500 total BC updates split over two DAgger rounds (250 updates per round). Each round collects states under the current Actor, labels them with the PD teacher, fits the Actor, and evaluates the same fixed initialization seed. The plan also includes two controls:
+All 12 factorial variants use 500 total BC updates split over two DAgger rounds (250 updates per round). Each round collects states under the current Actor, labels them with the PD teacher, aggregates the new labels with all previous rounds' data, fits the Actor on the accumulated dataset, and evaluates the same fixed initialization seed. The plan also includes two controls:
 
 - `baseline_pd_bc_1round`: same baseline reward and 500 BC updates in one round.
 - `baseline_no_bc`: same baseline reward, no BC updates.
