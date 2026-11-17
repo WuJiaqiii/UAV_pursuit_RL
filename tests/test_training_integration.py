@@ -205,6 +205,7 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     assert result["accepted_bc_updates"] == 2
     assert result["imitation_physics_steps"] > 0
     assert (tmp_path / "transfer_bc/initialization_bc.json").exists()
+    assert (tmp_path / "transfer_bc/checkpoints/bc_initial.pt").exists()
     assert (tmp_path / "transfer_bc/checkpoints/latest.pt").exists()
     rows = [
         json.loads(line)
