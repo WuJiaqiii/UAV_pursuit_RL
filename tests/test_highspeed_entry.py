@@ -214,3 +214,44 @@ def test_duplicate_recent_and_anchor_replay_is_counted_once():
     old["reward"] = copy.deepcopy(current["reward"])
     env = TaskMixtureBatch(current, old, copy.deepcopy(old), seed=709)
     assert env.task_counts == {"02_low_tail": 8, "01_static": 2}
+
+
+def test_discounted_decision_reward_matches_discounted_components():
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["task"]["duration"] = c["policy"]["decision_steps"] * c["physics"]["dt"]
+    env = CTBRBatch(c, n=2, seed=710)
+    action = torch.zeros(2, 4)
+    (_, _), reward, done, _, records = env.step(action, action)
+    scaled = sum(env.reward_components.values())
+    raw = sum(env.reward_components_unscaled.values())
+    assert bool(done.all())
+    assert torch.allclose(reward, scaled, atol=1e-7, rtol=1e-6)
+    assert torch.allclose(scaled, raw * c["reward"]["scale"], atol=1e-7, rtol=1e-6)
+    assert len(records) == 2
+    for record in records:
+        assert record["return_scaled"] == pytest.approx(
+            record["return_unscaled"] * c["reward"]["scale"], rel=1e-5, abs=1e-7
+        )
+
+
+def test_reward_ablation_plan_preserves_terminal_terms_and_has_factorial_controls():
+    import json
+    plan = json.loads(
+        Path("configs/experiments/02_low_tail_reward_ablation.json").read_text()
+    )
+    variants = {item["name"]: item for item in plan["variants"]}
+    assert "baseline_pd_bc" in variants and "baseline_no_bc" in variants
+    assert "no_braking_pd_bc" in variants
+    assert "no_entry_velocity_pd_bc" in variants
+    assert "no_braking_no_entry_velocity_pd_bc" in variants
+    assert "progress_only_diagnostic_pd_bc" in variants
+    for variant in variants.values():
+        reward = dict(plan["base_reward"])
+        reward.update(variant.get("reward", {}))
+        assert reward["completion_bonus"] == 10.0
+        assert reward["failure"] == 10.0
+    progress_only = dict(plan["base_reward"])
+    progress_only.update(variants["progress_only_diagnostic_pd_bc"]["reward"])
+    assert all(progress_only[k] == 0.0 for k in (
+        "braking", "entry_velocity", "tilt", "rate", "action_derivative", "time"
+    ))
