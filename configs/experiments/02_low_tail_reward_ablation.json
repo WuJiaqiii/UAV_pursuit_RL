@@ -30,7 +30,7 @@
     "bc_updates": 500,
     "bc_samples": 40000,
     "bc_stride": 2,
-    "bc_segment_seconds": 0.5,
+    "bc_segment_seconds": 4,
     "initialization_episodes": 32,
     "critic_updates": 600,
     "mc_episodes": 16,
@@ -153,6 +153,13 @@
       }
     },
     {
+      "name": "no_progress_pd_bc",
+      "bc_updates": 500,
+      "reward": {
+        "progress": 0
+      }
+    },
+    {
       "name": "progress_only_diagnostic_pd_bc",
       "bc_updates": 500,
       "reward": {
@@ -168,5 +175,22 @@
   "retention_seed_offsets": [
     89000,
     189000
+  ],
+  "default_screening_variants": [
+    "baseline_pd_bc",
+    "baseline_no_bc",
+    "progress_3_pd_bc",
+    "progress_0p3_pd_bc",
+    "no_braking_pd_bc",
+    "no_entry_velocity_pd_bc",
+    "no_braking_no_entry_velocity_pd_bc",
+    "no_progress_pd_bc",
+    "progress_only_diagnostic_pd_bc"
+  ],
+  "default_full_variants": [
+    "baseline_pd_bc",
+    "baseline_no_bc",
+    "no_braking_pd_bc",
+    "no_entry_velocity_pd_bc"
   ]
 }

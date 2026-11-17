@@ -72,7 +72,8 @@ and [code architecture](docs/ARCHITECTURE.md).
 
 For the matched 02_low_tail reward ablation matrix, run
 `scripts/run_reward_ablation.py`; it requires a v8 parent checkpoint and
-writes an auditable `ablation_matrix.json`.
+writes an auditable `ablation_matrix.json`. The screening default runs the
+primary BC/reward ablations; regularizer ablations can be selected explicitly.
 
 ## Code map
 

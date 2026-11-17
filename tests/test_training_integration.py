@@ -54,6 +54,13 @@ def test_ppo_train_and_checkpoint(tmp_path):
     assert restored["schema"] == SCHEMA
     assert model.obs_dim > 0
     assert saved["progress"]["ppo_updates"] >= 1
+    update = next(
+        json.loads(line)
+        for line in (tmp_path / "training/metrics.jsonl").read_text().splitlines()
+        if json.loads(line)["event"] == "ppo_update"
+    )
+    assert update["reward_component_residual_max"] < 1e-6
+    assert update["reward_scale_residual_max"] < 1e-6
 
 def test_unsafe_crossing_during_ppo_rollout(tmp_path, monkeypatch):
     c = quick()
@@ -214,3 +221,21 @@ def test_init_from_runs_current_phase_dagger_bc_before_ppo(tmp_path):
     bc = next(row for row in rows if row["event"] == "bc")
     assert bc["mode"] == "dagger_actor_states"
     assert bc["teacher_method"] == "pd"
+
+ 
+def test_reward_ablation_matrix_uses_full_teacher_approach_and_matched_replay():
+    from scripts.run_reward_ablation import build_configs
+    plan = json.loads(Path("configs/experiments/02_low_tail_reward_ablation.json").read_text())
+    variant = next(v for v in plan["variants"] if v["name"] == "baseline_pd_bc")
+    current, replay = build_configs(plan, variant, "screening", 42, "cpu")
+    assert current["training"]["bc_segment_seconds"] == pytest.approx(4.0)
+    assert current["training"]["bc_updates"] == 500
+    assert current["training"]["replay_recent_fraction"] == pytest.approx(0.2)
+    assert current["training"]["replay_anchor_fraction"] == 0.0
+    assert replay["reward"] == current["reward"]
+    assert replay["training"]["discount_time_s"] == current["training"]["discount_time_s"]
+    assert replay["training"]["advantage_time_s"] == current["training"]["advantage_time_s"]
+    assert current["training"]["prediction_updates_enabled"] is False
+    assert current["num_envs"] - round(current["num_envs"] * 0.2) == 51
+    assert round(current["num_envs"] * 0.2) == 13
+    assert "no_progress_pd_bc" in {v["name"] for v in plan["variants"]}

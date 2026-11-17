@@ -432,6 +432,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         component_scaled_sums = {}
         component_unscaled_sums = {}
         component_slots = 0
+        reward_component_residual_max = torch.zeros((), device=env.device)
+        reward_scale_residual_max = torch.zeros((), device=env.device)
         prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
         for tick in range(ticks):
             try:
@@ -440,6 +442,19 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 prediction_positions[tick] = target_positions(env).float()
                 rollout_physics_steps += env.last_physics_steps
                 component_slots += env.n
+                scaled_total = torch.zeros_like(reward)
+                unscaled_total = torch.zeros_like(reward)
+                for value in env.reward_components.values():
+                    scaled_total += value
+                for value in env.reward_components_unscaled.values():
+                    unscaled_total += value
+                reward_component_residual_max = torch.maximum(
+                    reward_component_residual_max, (scaled_total - reward).abs().max()
+                )
+                reward_scale_residual_max = torch.maximum(
+                    reward_scale_residual_max,
+                    (scaled_total - unscaled_total * c["reward"]["scale"]).abs().max(),
+                )
                 for key, value in env.reward_components.items():
                     component_scaled_sums[key] = (
                         component_scaled_sums.get(
@@ -594,6 +609,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 for name in env.task_counts
             },
             reward_scale=c["reward"]["scale"],
+            reward_component_residual_max=float(reward_component_residual_max.item()),
+            reward_scale_residual_max=float(reward_scale_residual_max.item()),
             reward_components={
                 name: dict(
                     scaled_sum=float(value.item()),

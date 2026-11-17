@@ -79,6 +79,7 @@ training budget and validation protocol.
 | `baseline_no_bc` | 0 | Isolates the value of transfer BC |
 | `progress_3_pd_bc` | 500 | progress=3 |
 | `progress_0p3_pd_bc` | 500 | progress=0.3 |
+| `no_progress_pd_bc` | 500 | progress=0; negative control retaining terminal success/failure |
 | `no_braking_pd_bc` | 500 | braking=0 |
 | `no_entry_velocity_pd_bc` | 500 | entry_velocity=0 |
 | `no_braking_no_entry_velocity_pd_bc` | 500 | Both near-target shaping terms off |
@@ -90,7 +91,7 @@ training budget and validation protocol.
 
 ## Budget and evaluation
 
-Screening: one seed (42), 4 million aggregate physics steps, 32-episode
+Screening defaults to the nine primary variants listed in `default_screening_variants`; the remaining regularizer ablations are available by explicit `--variants`. Screening: one seed (42), 4 million aggregate physics steps, 32-episode
 validation every 1 million steps, 8 MC episodes, 400 Critic warm-up updates, no periodic MC correction,
 and 64-episode final reports on two held-out seed offsets, plus static-task retention checks on two additional seed offsets.
 

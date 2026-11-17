@@ -63,6 +63,8 @@ def build_configs(plan, variant, stage_name, seed, device):
     replay = load(plan["replay_profile"], device=device, seed=seed)
     replay["num_envs"] = base["num_envs"]
     replay["reward"] = copy.deepcopy(base["reward"])
+    for key in ("discount_time_s", "advantage_time_s"):
+        replay["training"][key] = base["training"][key]
     validate(replay)
     return base, replay
 
@@ -77,7 +79,8 @@ def main(argv=None):
     if not parent.is_file():
         raise FileNotFoundError(f"Parent checkpoint not found: {parent}")
     variants = {item["name"]: item for item in plan["variants"]}
-    selected = args.variants or list(variants)
+    default_key = f"default_{args.stage}_variants"
+    selected = args.variants or plan.get(default_key, list(variants))
     unknown = sorted(set(selected) - set(variants))
     if unknown:
         raise ValueError(f"Unknown reward-ablation variants: {unknown}")
@@ -110,8 +113,12 @@ def main(argv=None):
                 "bc_updates": config["training"]["bc_updates"],
                 "reward": config["reward"],
                 "task_mix": {
-                    config["task"]["name"]: 1.0 - config["training"]["replay_recent_fraction"],
-                    replay["task"]["name"]: config["training"]["replay_recent_fraction"],
+                    "current_fraction": 1.0 - config["training"]["replay_recent_fraction"],
+                    "replay_fraction": config["training"]["replay_recent_fraction"],
+                    "current_envs": config["num_envs"] - round(config["num_envs"] * config["training"]["replay_recent_fraction"]),
+                    "replay_envs": round(config["num_envs"] * config["training"]["replay_recent_fraction"]),
+                    "current_task": config["task"]["name"],
+                    "replay_task": replay["task"]["name"],
                 },
             }, ensure_ascii=False), flush=True)
             if args.dry_run:
