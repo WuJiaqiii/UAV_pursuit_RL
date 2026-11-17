@@ -84,7 +84,7 @@ class CTBRBatch:
         self.finished[mask] = False
         self.raw_history[mask] = 0
         for name in (
-            "timer", "episode_return", "sum_p2", "sum_v2",
+            "timer", "episode_return_scaled", "episode_return_unscaled", "sum_p2", "sum_v2",
             "maximum_target_speed", "maximum_target_accel", "maximum_target_jerk",
             "sat_count", "ticks",
         ):
