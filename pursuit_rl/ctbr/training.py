@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import torch
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
-from .config import fingerprint, interface, transfer_interface, decision_dt
+from .config import fingerprint, transfer_interface, decision_dt
 from .checkpoint import new_model, save, load, write_json, source_fingerprint
 from .environment import CTBRBatch
 from .control import teacher

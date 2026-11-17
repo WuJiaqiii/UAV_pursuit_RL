@@ -3,7 +3,7 @@ import copy
 from pathlib import Path
 import pytest
 import torch
-from pursuit_rl.ctbr.config import SCHEMA, DEFAULT, interface, load, merge
+from pursuit_rl.ctbr.config import SCHEMA, DEFAULT, interface, transfer_interface, load, merge
 from pursuit_rl.ctbr.environment import CTBRBatch
 from pursuit_rl.ctbr.control import guidance_acceleration, teacher
 from pursuit_rl.ctbr.mixture import TaskMixtureBatch
@@ -157,3 +157,60 @@ def test_cruise_trim_rejects_physically_unreachable_drag():
     c["physics"]["drag"] = 0.02
     with pytest.raises(ValueError, match="Trimmed cruise"):
         CTBRBatch(c, n=6, seed=88)
+
+
+def test_scaled_reward_components_are_the_ppo_reward():
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["policy"]["decision_steps"] = 1
+    c["task"]["duration"] = 0.001
+    env = CTBRBatch(c, n=2, seed=707)
+    action = torch.zeros(2, 4)
+    (_, _), reward, done, _, records = env.step(action, action)
+    scaled = sum(env.reward_components.values())
+    raw = sum(env.reward_components_unscaled.values())
+    assert torch.allclose(reward, scaled, atol=1e-7, rtol=1e-6)
+    assert torch.allclose(scaled, raw * c["reward"]["scale"], atol=1e-7, rtol=1e-6)
+    assert bool(done.all())
+    assert len(records) == 2
+    for record in records:
+        assert record["return_scaled"] == pytest.approx(
+            record["return_unscaled"] * c["reward"]["scale"], rel=1e-5, abs=1e-7
+        )
+    assert torch.allclose(env.episode_return_scaled, env.episode_return_unscaled * c["reward"]["scale"], atol=1e-6)
+
+
+def test_reward_ablation_keeps_hard_entry_and_flight_constraints():
+    c = load("configs/first_entry_highspeed/02_low_tail.json")
+    c["reward"].update(
+        braking=0.0, entry_velocity=0.0, tilt=0.0, rate=0.0,
+        action_derivative=0.0, time=0.0,
+    )
+    env = CTBRBatch(c, n=1, seed=708)
+    assert env.config["task"]["radius"] == pytest.approx(0.5)
+    assert env.config["task"]["entry_relative_speed_max_mps"] == pytest.approx(15.0)
+    assert env.config["physics"]["max_tilt_deg"] == pytest.approx(70.0)
+    assert env.config["physics"]["max_speed"] == pytest.approx(60.0)
+    assert env.config["physics"]["max_load_factor_g"] == pytest.approx(2.5)
+
+
+def test_reward_transfer_contract_allows_reward_ablations_only():
+    base = load("configs/first_entry_highspeed/02_low_tail.json")
+    changed_reward = copy.deepcopy(base)
+    changed_reward["reward"]["braking"] = 0.0
+    changed_reward["reward"]["progress"] = 6.0
+    assert transfer_interface(base) == transfer_interface(changed_reward)
+    changed_physics = copy.deepcopy(base)
+    changed_physics["physics"]["drag"] += 0.001
+    assert transfer_interface(base) != transfer_interface(changed_physics)
+
+
+def test_duplicate_recent_and_anchor_replay_is_counted_once():
+    current = load("configs/first_entry_highspeed/02_low_tail.json")
+    current["num_envs"] = 10
+    current["training"]["replay_recent_fraction"] = 0.2
+    current["training"]["replay_anchor_fraction"] = 0.2
+    old = load("configs/first_entry_highspeed/01_static.json")
+    old["num_envs"] = 10
+    old["reward"] = copy.deepcopy(current["reward"])
+    env = TaskMixtureBatch(current, old, copy.deepcopy(old), seed=709)
+    assert env.task_counts == {"02_low_tail": 8, "01_static": 2}
