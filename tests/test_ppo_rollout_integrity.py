@@ -122,3 +122,33 @@ def test_emit_identifies_nonfinite_nested_metric_path(tmp_path):
             metrics={"critic": {"mean": float("nan")}},
         )
     assert not (tmp_path / "metrics.jsonl").exists()
+
+def test_factorial_plan_build_configs_and_gate_policy():
+    import json
+    from pathlib import Path
+    from scripts.run_reward_ablation import build_configs
+
+    plan = json.loads(
+        Path("configs/experiments/03_low_tail_factorial.json").read_text()
+    )
+    assert plan["schema"] == "pursuit-first-entry-reward-factorial-v2"
+    assert len(plan["variants"]) == 14
+    variant = next(item for item in plan["variants"] if item["name"] == "p6_b05_ev05")
+    config, replay = build_configs(plan, variant, "screening", 42, "cpu")
+    assert config["training"]["bc_updates"] == 500
+    assert config["training"]["bc_rounds"] == 2
+    assert config["training"]["initialization_success_floor"] == 0.0
+    assert config["reward"]["progress"] == 6
+    assert config["reward"]["braking"] == 0.5
+    assert config["reward"]["entry_velocity"] == 0.5
+    assert replay["reward"] == config["reward"]
+
+    gated, _ = build_configs(
+        plan, variant, "screening", 42, "cpu", enforce_initialization_gate=True
+    )
+    assert gated["training"]["initialization_success_floor"] == 0.5
+
+    no_bc = next(item for item in plan["variants"] if item["name"] == "baseline_no_bc")
+    no_bc_config, _ = build_configs(plan, no_bc, "screening", 42, "cpu")
+    assert no_bc_config["training"]["bc_updates"] == 0
+    assert no_bc_config["training"]["bc_rounds"] == 1

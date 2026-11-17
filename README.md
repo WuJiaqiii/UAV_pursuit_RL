@@ -70,10 +70,15 @@ See [experiment design](docs/HIGH_SPEED_FIRST_ENTRY.md),
 [low-tail reward/transfer-BC ablation plan](docs/LOW_TAIL_REWARD_ABLATION.md),
 and [code architecture](docs/ARCHITECTURE.md).
 
-For the matched 02_low_tail reward ablation matrix, run
-`scripts/run_reward_ablation.py`; it requires a v8 parent checkpoint and
-writes an auditable `ablation_matrix.json`. The screening default runs the
-primary BC/reward ablations; regularizer ablations can be selected explicitly.
+For the matched low-tail reward campaign, use
+`configs/experiments/03_low_tail_factorial.json` with
+`scripts/run_reward_ablation.py`. It runs a 3×2×2 reward factorial, one-round
+and two-round PD DAgger controls, and a no-BC control. BC initialization quality
+is recorded but does not gate PPO by default; pass `--enforce-initialization-gate`
+to require the configured floor. The runner writes per-run manifests and an
+auditable `ablation_matrix.json`, and supports `--resume-existing` when the
+checkpoint, config, and source fingerprint match. The older v1 plan remains
+available for historical reproduction.
 
 ## Code map
 
