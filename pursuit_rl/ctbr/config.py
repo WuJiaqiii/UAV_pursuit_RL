@@ -293,3 +293,14 @@ def interface(c):
         "prediction": c["prediction"],
         "critic": c["critic"],
     }
+
+def transfer_interface(c):
+    """Contract required for warm-starting weights across reward ablations.
+
+    Reward weights may change because the transferred Critic is recalibrated
+    before PPO. Action, observation, dynamics, predictor and Critic architecture
+    must remain identical.
+    """
+    contract = copy.deepcopy(interface(c))
+    contract.pop("reward")
+    return contract

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 import torch
-from .config import interface
+from .config import interface, fingerprint
 from .environment import CTBRBatch
 
 
@@ -10,8 +10,16 @@ class TaskMixtureBatch:
     def __init__(self, c, recent, anchor, seed):
         n = c["num_envs"]
         tr = c["training"]
-        nr = round(n * tr["replay_recent_fraction"]) if recent else 0
-        na = round(n * tr["replay_anchor_fraction"]) if anchor else 0
+        recent_fraction = tr["replay_recent_fraction"] if recent else 0.0
+        anchor_fraction = tr["replay_anchor_fraction"] if anchor else 0.0
+        # A task can arrive through both the immediately previous phase and a
+        # retained-skill anchor. Identical profiles represent one replay source,
+        # not two independent allocations.
+        if recent and anchor and fingerprint(recent) == fingerprint(anchor):
+            recent_fraction = max(recent_fraction, anchor_fraction)
+            anchor_fraction = 0.0
+        nr = round(n * recent_fraction)
+        na = round(n * anchor_fraction)
         if nr + na >= n:
             raise ValueError("Task mixture must include current-task environments")
         groups = [(c, n - nr - na), (recent, nr), (anchor, na)]
@@ -43,6 +51,7 @@ class TaskMixtureBatch:
         self.n = n
         self.last_physics_steps = 0
         self.reward_components = {}
+        self.reward_components_unscaled = {}
 
     @property
     def steps(self):
@@ -92,6 +101,18 @@ class TaskMixtureBatch:
                 for e in self.groups
             ])
             for key in keys
+        }
+        raw_keys = sorted(
+            set().union(*(e.reward_components_unscaled.keys() for e in self.groups))
+        )
+        self.reward_components_unscaled = {
+            key: torch.cat([
+                e.reward_components_unscaled.get(
+                    key, torch.zeros(e.n, device=e.device)
+                )
+                for e in self.groups
+            ])
+            for key in raw_keys
         }
         return (
             self.observe(),

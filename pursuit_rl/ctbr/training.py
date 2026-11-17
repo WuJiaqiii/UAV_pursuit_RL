@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import torch
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
-from .config import fingerprint, interface, decision_dt
+from .config import fingerprint, interface, transfer_interface, decision_dt
 from .checkpoint import new_model, save, load, write_json, source_fingerprint
 from .environment import CTBRBatch
 from .control import teacher
@@ -227,9 +227,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         model = new_model(c)
         if init_from:
             parent, old, saved = load(init_from, c["device"])
-            if interface(old) != interface(c):
+            if transfer_interface(old) != transfer_interface(c):
                 raise ValueError(
-                    "Curriculum transfer must preserve action, observations, dynamics and reward"
+                    "Warm start must preserve action, observations, dynamics, predictor and Critic architecture"
                 )
             model.load_state_dict(parent.state_dict())
             model.critic_policy_match = False
@@ -244,6 +244,49 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             )
             origin = "transfer_initial"
             del parent
+            if tr["bc_updates"]:
+                # DAgger-style transfer adaptation: visit states with the
+                # inherited Actor, but label every sampled state with the
+                # current phase's geometric teacher.
+                x, y, interactions = imitation_data(
+                    c, model=model, seed=c["seed"] + 20000
+                )
+                loss = fit_actor(
+                    model, (x, y), tr["bc_updates"], tr["batch_size"]
+                )
+                progress["bc_updates"] += tr["bc_updates"]
+                progress["accepted_bc_updates"] += tr["bc_updates"]
+                progress["imitation_physics_steps"] += interactions
+                origin = "transfer_bc_initial"
+                emit(
+                    root,
+                    "bc",
+                    mode="dagger_actor_states",
+                    teacher_method=tr["teacher_method"],
+                    loss=loss,
+                    samples=len(x),
+                    interactions_physics_steps=interactions,
+                    updates=tr["bc_updates"],
+                    loss_space="standardized_action_mse",
+                )
+                bc_report = initialization_validation(
+                    model, c, root, progress, "bc"
+                )
+                del x, y
+                if bc_report["success_rate"] < tr["initialization_success_floor"]:
+                    details = dict(
+                        event="initialization_gate_failed",
+                        phase=c["task"]["name"],
+                        source="transfer_bc",
+                        success_rate=bc_report["success_rate"],
+                        minimum_success=tr["initialization_success_floor"],
+                        failures=bc_report["failures"],
+                        report=str(root / "initialization_bc.json"),
+                        checkpoint=str(ckpt / "initial.pt"),
+                        message="Transferred Actor failed current-task BC validation; PPO was not started.",
+                    )
+                    write_json(root / "gate_failure.json", details)
+                    raise ExperimentGateError(details)
         else:
             origin = "bc_initial" if tr["bc_updates"] else "random_initial"
             # The teacher uses only current kinematics (first 21 features).
@@ -265,8 +308,22 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     samples=len(x),
                     loss_space="standardized_action_mse",
                 )
-                initialization_validation(model, c, root, progress, "bc")
+                bc_report = initialization_validation(model, c, root, progress, "bc")
                 del x, y
+                if bc_report["success_rate"] < tr["initialization_success_floor"]:
+                    details = dict(
+                        event="initialization_gate_failed",
+                        phase=c["task"]["name"],
+                        source="fresh_bc",
+                        success_rate=bc_report["success_rate"],
+                        minimum_success=tr["initialization_success_floor"],
+                        failures=bc_report["failures"],
+                        report=str(root / "initialization_bc.json"),
+                        checkpoint=str(ckpt / "initial.pt"),
+                        message="Teacher BC initialization failed validation; PPO was not started.",
+                    )
+                    write_json(root / "gate_failure.json", details)
+                    raise ExperimentGateError(details)
         calibration, data = evaluate(
             model,
             c,
@@ -327,32 +384,6 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             success_rate=initial["success_rate"],
             unsafe_entry_rate=initial["unsafe_entry_rate"],
         )
-    if (
-        not init_from
-        and progress["ppo_updates"] == 0
-        and progress["parent"] is None
-        and tr["bc_updates"]
-    ):
-        initial = json.loads((root / "initial_validation.json").read_text())
-    if (
-        not init_from
-        and progress["ppo_updates"] == 0
-        and progress["parent"] is None
-        and tr["bc_updates"]
-        and initial["success_rate"] < tr["initialization_success_floor"]
-    ):
-        details = dict(
-            event="initialization_gate_failed",
-            phase=c["task"]["name"],
-            success_rate=initial["success_rate"],
-            minimum_success=tr["initialization_success_floor"],
-            failures=initial["failures"],
-            report=str(root / "initial_validation.json"),
-            checkpoint=str(ckpt / "initial.pt"),
-            message="Initialization failed full-episode validation; PPO was not started. Fix initialization or use a new explicitly configured experiment.",
-        )
-        write_json(root / "gate_failure.json", details)
-        raise ExperimentGateError(details)
     write_json(root / "config.json", c)
     env = training_env(c, replay, seed=c["seed"] + 7919 * progress["ppo_updates"])
     emit(
@@ -396,6 +427,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         buf.decision_dt = env.decision_dt
         records = []
         rollout_physics_steps = 0
+        component_scaled_sums = {}
+        component_unscaled_sums = {}
+        component_slots = 0
         prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
         for tick in range(ticks):
             try:
@@ -403,6 +437,17 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 (nobs, npriv), reward, term, trunc, completed = env.step(action, raw)
                 prediction_positions[tick] = target_positions(env).float()
                 rollout_physics_steps += env.last_physics_steps
+                component_slots += env.n
+                for key, value in env.reward_components.items():
+                    component_scaled_sums[key] = (
+                        component_scaled_sums.get(key, 0.0)
+                        + float(value.detach().sum().item())
+                    )
+                for key, value in env.reward_components_unscaled.items():
+                    component_unscaled_sums[key] = (
+                        component_unscaled_sums.get(key, 0.0)
+                        + float(value.detach().sum().item())
+                    )
             except Exception as exc:
                 if not (root / "first_anomaly.pt").exists():
                     snapshot = buf.diagnostic_snapshot()
@@ -541,6 +586,21 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     successes=sum(r["task"] == name and r["success"] for r in records),
                 )
                 for name in env.task_counts
+            },
+            reward_scale=c["reward"]["scale"],
+            reward_components={
+                name: dict(
+                    scaled_sum=value,
+                    scaled_mean_per_allocated_transition=(
+                        value / max(component_slots, 1)
+                    ),
+                    unscaled_sum=component_unscaled_sums.get(name, 0.0),
+                    unscaled_mean_per_allocated_transition=(
+                        component_unscaled_sums.get(name, 0.0)
+                        / max(component_slots, 1)
+                    ),
+                )
+                for name, value in component_scaled_sums.items()
             },
         )
         interval = tr["mc_calibration_every_updates"]

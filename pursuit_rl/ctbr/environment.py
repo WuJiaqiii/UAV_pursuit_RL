@@ -53,7 +53,7 @@ class CTBRBatch:
         self.desired_acc = torch.zeros_like(self.center)
         self.pattern = torch.zeros(self.n, dtype=torch.long, device=self.device)
         for name in (
-            "timer", "speed_setting", "episode_return", "sum_p2", "sum_v2",
+            "timer", "speed_setting", "episode_return_scaled", "episode_return_unscaled", "sum_p2", "sum_v2",
             "maximum_target_speed", "maximum_target_accel", "maximum_target_jerk",
             "minimum_distance", "sat_count", "ticks",
         ):
@@ -399,6 +399,7 @@ class CTBRBatch:
         reward = torch.zeros(self.n, device=self.device)
         terminated = torch.zeros_like(self.finished)
         components = {}
+        components_unscaled = {}
         records = []
         counts = torch.zeros(self.n, dtype=torch.long, device=self.device)
         for tick in range(self.decision_steps):
@@ -411,11 +412,16 @@ class CTBRBatch:
             reward += discount * step_reward
             for key, value in self.reward_components.items():
                 components[key] = components.get(key, 0.0) + discount * value
+            for key, value in self.reward_components_unscaled.items():
+                components_unscaled[key] = (
+                    components_unscaled.get(key, 0.0) + discount * value
+                )
             terminated |= done
             records.extend(completed)
         self.last_physics_steps = int(counts.sum())
         self.last_physics_steps_per_env = counts
         self.reward_components = components
+        self.reward_components_unscaled = components_unscaled
         self.append_target_history(started)
         obs, priv = self.observe()
         self.final_obs, self.final_priv = obs, priv
@@ -517,13 +523,20 @@ class CTBRBatch:
             "completion": r["completion_bonus"] * success.float(),
             "failure": -r["failure"] * penalize.float(),
         }
-        self.reward_components = {
-            key: torch.where(active, value, 0.0) * r["scale"]
+        # Keep raw and scaled terms explicit. PPO, rollout diagnostics and the
+        # decision-step component sum all use the same scaled reward tensor.
+        self.reward_components_unscaled = {
+            key: torch.where(active, value, 0.0)
             for key, value in components.items()
         }
-        reward = sum(components.values())
-        reward = torch.where(active, reward, 0.0)
-        self.episode_return += reward
+        self.reward_components = {
+            key: value * r["scale"]
+            for key, value in self.reward_components_unscaled.items()
+        }
+        reward_unscaled = sum(self.reward_components_unscaled.values())
+        reward = sum(self.reward_components.values())
+        self.episode_return_unscaled += reward_unscaled
+        self.episode_return_scaled += reward
         self.finished |= done
         records = []
         if bool(done.any()):
@@ -551,7 +564,8 @@ class CTBRBatch:
                         success=bool(success[slot]),
                         reason=reason,
                         time=float(self.steps[slot]) * self.dt,
-                        return_unscaled=float(self.episode_return[slot]),
+                        return_unscaled=float(self.episode_return_unscaled[slot]),
+                        return_scaled=float(self.episode_return_scaled[slot]),
                         minimum_distance=float(self.minimum_distance[slot]),
                         position_rmse=float(
                             torch.sqrt(self.sum_p2[slot] / self.ticks[slot].clamp_min(1))
@@ -570,4 +584,4 @@ class CTBRBatch:
                         ),
                     )
                 )
-        return reward * r["scale"], done, records
+        return reward, done, records
