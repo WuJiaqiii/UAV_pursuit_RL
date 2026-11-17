@@ -258,6 +258,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 progress["accepted_bc_updates"] += tr["bc_updates"]
                 progress["imitation_physics_steps"] += interactions
                 origin = "transfer_bc_initial"
+                save(ckpt / "bc_initial.pt", model, c, progress, origin)
                 emit(
                     root,
                     "bc",
@@ -282,7 +283,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                         minimum_success=tr["initialization_success_floor"],
                         failures=bc_report["failures"],
                         report=str(root / "initialization_bc.json"),
-                        checkpoint=str(ckpt / "initial.pt"),
+                        checkpoint=str(ckpt / "bc_initial.pt"),
                         message="Transferred Actor failed current-task BC validation; PPO was not started.",
                     )
                     write_json(root / "gate_failure.json", details)
@@ -301,6 +302,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 progress["bc_updates"] += tr["bc_updates"]
                 progress["accepted_bc_updates"] += tr["bc_updates"]
                 progress["imitation_physics_steps"] += interactions
+                save(ckpt / "bc_initial.pt", model, c, progress, origin)
                 emit(
                     root,
                     "bc",
@@ -319,7 +321,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                         minimum_success=tr["initialization_success_floor"],
                         failures=bc_report["failures"],
                         report=str(root / "initialization_bc.json"),
-                        checkpoint=str(ckpt / "initial.pt"),
+                        checkpoint=str(ckpt / "bc_initial.pt"),
                         message="Teacher BC initialization failed validation; PPO was not started.",
                     )
                     write_json(root / "gate_failure.json", details)
