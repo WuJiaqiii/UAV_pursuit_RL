@@ -257,3 +257,23 @@ def test_reward_ablation_plan_preserves_terminal_terms_and_has_factorial_control
     assert all(progress_only[k] == 0.0 for k in (
         "braking", "entry_velocity", "tilt", "rate", "action_derivative", "time"
     ))
+
+
+def test_zero_soft_shaping_does_not_disable_unsafe_entry_terminal():
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["policy"]["decision_steps"] = 1
+    c["reward"].update(
+        progress=0.0, braking=0.0, entry_velocity=0.0, tilt=0.0,
+        rate=0.0, action_derivative=0.0, time=0.0,
+    )
+    env = CTBRBatch(c, n=1, seed=711)
+    u, target = env.plant.pursuer, env.plant.target
+    u.pos.copy_(target.pos.float())
+    u.pos[0, 0] += 0.505
+    u.vel.zero_()
+    u.vel[0, 0] = -17.0
+    _, reward, done, _, records = env.step(torch.zeros(1, 4))
+    assert done.item()
+    assert records[0]["reason"] == "unsafe_entry"
+    assert not records[0]["success"]
+    assert reward.item() < 0
