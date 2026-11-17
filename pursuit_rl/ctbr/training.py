@@ -440,13 +440,17 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 component_slots += env.n
                 for key, value in env.reward_components.items():
                     component_scaled_sums[key] = (
-                        component_scaled_sums.get(key, 0.0)
-                        + float(value.detach().sum().item())
+                        component_scaled_sums.get(
+                            key, torch.zeros((), device=env.device)
+                        )
+                        + value.detach().sum()
                     )
                 for key, value in env.reward_components_unscaled.items():
                     component_unscaled_sums[key] = (
-                        component_unscaled_sums.get(key, 0.0)
-                        + float(value.detach().sum().item())
+                        component_unscaled_sums.get(
+                            key, torch.zeros((), device=env.device)
+                        )
+                        + value.detach().sum()
                     )
             except Exception as exc:
                 if not (root / "first_anomaly.pt").exists():
@@ -590,13 +594,13 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             reward_scale=c["reward"]["scale"],
             reward_components={
                 name: dict(
-                    scaled_sum=value,
+                    scaled_sum=float(value.item()),
                     scaled_mean_per_allocated_transition=(
-                        value / max(component_slots, 1)
+                        float(value.item()) / max(component_slots, 1)
                     ),
-                    unscaled_sum=component_unscaled_sums.get(name, 0.0),
+                    unscaled_sum=float(component_unscaled_sums[name].item()),
                     unscaled_mean_per_allocated_transition=(
-                        component_unscaled_sums.get(name, 0.0)
+                        float(component_unscaled_sums[name].item())
                         / max(component_slots, 1)
                     ),
                 )
