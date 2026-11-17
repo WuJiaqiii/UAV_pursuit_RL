@@ -57,6 +57,18 @@ This establishes whether the PD teacher itself can solve the validation scenario
 
 ## Screening
 
+Before launching the full matrix, validate the plan and paths without creating run directories:
+
+```bash
+python scripts/run_reward_ablation.py \
+  --plan configs/experiments/03_low_tail_factorial.json \
+  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
+  --out runs/low_tail_factorial_v2/dry_run \
+  --stage screening --device cpu --dry-run
+```
+
+Use a separate output path for the real campaign because the runner deliberately refuses to overwrite an existing matrix.
+
 ```bash
 python scripts/run_reward_ablation.py \
   --plan configs/experiments/03_low_tail_factorial.json \

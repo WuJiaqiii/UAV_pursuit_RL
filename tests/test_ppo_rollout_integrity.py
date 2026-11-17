@@ -171,3 +171,36 @@ def test_checkpoint_loader_accepts_v8_config_without_bc_rounds(tmp_path):
 
     _, restored, _ = load_checkpoint(path)
     assert restored["training"]["bc_rounds"] == 1
+
+def test_factorial_launcher_dry_run_writes_matrix_without_starting_training(tmp_path):
+    from pursuit_rl.ctbr.checkpoint import save
+    from scripts.run_reward_ablation import main
+
+    config = _quick_config()
+    parent_model = new_model(config, optimizers=False)
+    parent = tmp_path / "parent.pt"
+    save(parent, parent_model, config, {"physics_steps": 0}, "dry_run_parent")
+
+    output = tmp_path / "dry_run"
+    result = main(
+        [
+            "--plan",
+            "configs/experiments/03_low_tail_factorial.json",
+            "--parent-checkpoint",
+            str(parent),
+            "--out",
+            str(output),
+            "--stage",
+            "screening",
+            "--variants",
+            "p6_b05_ev05",
+            "--dry-run",
+            "--device",
+            "cpu",
+        ]
+    )
+    assert len(result["results"]) == 1
+    assert result["results"][0]["status"] == "dry_run"
+    assert result["results"][0]["ppo_physics_steps_budget"] == 4_000_000
+    assert (output / "ablation_matrix.json").is_file()
+    assert not (output / "p6_b05_ev05" / "seed_42").exists()
