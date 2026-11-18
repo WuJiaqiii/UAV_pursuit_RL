@@ -1,0 +1,267 @@
+{
+  "schema": "pursuit-first-entry-reward-factorial-v2",
+  "description": "Long-horizon low-tail CTBR PPO: reward × actor learning rate × iterative DAgger rounds × critic learning rate × GAE timescale. Numerical safety first; long runs only after shorter matched seeds.",
+  "base_profile": "configs/first_entry_highspeed/02_low_tail.json",
+  "replay_profile": "configs/first_entry_highspeed/01_static.json",
+  "teacher_method": "pd",
+  "base_reward": {
+    "scale": 0.1,
+    "progress": 6,
+    "braking": 0.5,
+    "entry_velocity": 0.5,
+    "tilt": 0.08,
+    "rate": 0.01,
+    "action_derivative": 0.00001,
+    "time": 0.02,
+    "completion_bonus": 10,
+    "failure": 10
+  },
+  "initialization_success_floor": 0.5,
+  "minimum_success": 0.8,
+  "final_gate_seed_offsets": [
+    79000,
+    179000
+  ],
+  "replay": {
+    "recent_fraction": 0.2,
+    "anchor_fraction": 0
+  },
+  "training_defaults": {
+    "bc_updates": 500,
+    "bc_samples": 40000,
+    "bc_stride": 2,
+    "bc_segment_seconds": 4,
+    "initialization_episodes": 32,
+    "critic_updates": 600,
+    "mc_episodes": 16,
+    "mc_calibration_every_updates": 0,
+    "mc_calibration_updates": 16,
+    "replay_recent_fraction": 0.2,
+    "replay_anchor_fraction": 0,
+    "prediction_updates_enabled": false,
+    "teacher_method": "pd",
+    "validation_episodes": 32,
+    "validation_seed": 78000,
+    "bc_rounds": 2,
+    "initialization_success_floor": 0.5
+  },
+  "stages": {
+    "screening": {
+      "seeds": [
+        42,
+        43
+      ],
+      "final_eval_episodes": 96,
+      "cross_eval_episodes": 32,
+      "training": {
+        "physics_steps": 8000000,
+        "validation_every": 2000000,
+        "validation_episodes": 24,
+        "mc_episodes": 12,
+        "critic_updates": 500,
+        "mc_calibration_every_updates": 16,
+        "mc_calibration_updates": 16,
+        "prediction_updates_enabled": false
+      }
+    },
+    "full": {
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "final_eval_episodes": 128,
+      "cross_eval_episodes": 64,
+      "training": {
+        "physics_steps": 40000000,
+        "validation_every": 5000000,
+        "validation_episodes": 32,
+        "mc_episodes": 16,
+        "critic_updates": 600,
+        "mc_calibration_every_updates": 16,
+        "mc_calibration_updates": 32,
+        "prediction_updates_enabled": false
+      }
+    },
+    "extended": {
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ],
+      "final_eval_episodes": 256,
+      "cross_eval_episodes": 128,
+      "training": {
+        "physics_steps": 80000000,
+        "validation_every": 8000000,
+        "validation_episodes": 32,
+        "mc_episodes": 32,
+        "critic_updates": 800,
+        "mc_calibration_every_updates": 16,
+        "mc_calibration_updates": 32,
+        "prediction_updates_enabled": false
+      }
+    }
+  },
+  "variants": [
+    {
+      "name": "reference_p6_bc2",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "progress": 6,
+        "braking": 0.5,
+        "entry_velocity": 0.5
+      },
+      "training": {
+        "actor_lr": 0.00003,
+        "critic_lr": 0.0001
+      }
+    },
+    {
+      "name": "no_bc_p6",
+      "bc_updates": 0,
+      "bc_rounds": 1,
+      "reward": {
+        "progress": 6
+      }
+    },
+    {
+      "name": "p3_bc2",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "progress": 3
+      }
+    },
+    {
+      "name": "p12_bc2",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "progress": 12
+      }
+    },
+    {
+      "name": "p6_no_braking",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "braking": 0
+      }
+    },
+    {
+      "name": "p6_no_entry_velocity",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "entry_velocity": 0
+      }
+    },
+    {
+      "name": "p6_no_both",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "reward": {
+        "braking": 0,
+        "entry_velocity": 0
+      }
+    },
+    {
+      "name": "p6_bc1",
+      "bc_updates": 500,
+      "bc_rounds": 1
+    },
+    {
+      "name": "p6_bc3_750",
+      "bc_updates": 750,
+      "bc_rounds": 3
+    },
+    {
+      "name": "p6_bc4_1000",
+      "bc_updates": 1000,
+      "bc_rounds": 4
+    },
+    {
+      "name": "p6_actor_lr_1e5",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "training": {
+        "actor_lr": 0.00001
+      }
+    },
+    {
+      "name": "p6_actor_lr_6e5",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "training": {
+        "actor_lr": 0.00006
+      }
+    },
+    {
+      "name": "p6_critic_lr_5e5",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "training": {
+        "critic_lr": 0.00005
+      }
+    },
+    {
+      "name": "p6_gae_1p5s",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "training": {
+        "advantage_time_s": 1.5
+      }
+    },
+    {
+      "name": "p6_gae_5s",
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "training": {
+        "advantage_time_s": 5
+      }
+    }
+  ],
+  "retention_seed_offsets": [
+    89000,
+    189000
+  ],
+  "default_screening_variants": [
+    "reference_p6_bc2",
+    "no_bc_p6",
+    "p3_bc2",
+    "p12_bc2",
+    "p6_no_braking",
+    "p6_no_entry_velocity",
+    "p6_no_both",
+    "p6_bc1",
+    "p6_bc3_750",
+    "p6_bc4_1000",
+    "p6_actor_lr_1e5",
+    "p6_actor_lr_6e5",
+    "p6_critic_lr_5e5",
+    "p6_gae_1p5s",
+    "p6_gae_5s"
+  ],
+  "default_full_variants": [
+    "reference_p6_bc2",
+    "p6_bc3_750",
+    "p6_no_braking",
+    "p6_actor_lr_1e5",
+    "p12_bc2"
+  ],
+  "cross_eval_profiles": [
+    "configs/first_entry_highspeed/03_low_head_on.json",
+    "configs/first_entry_highspeed/04_low_random.json"
+  ],
+  "cross_eval_seed_offsets": [
+    279000
+  ],
+  "default_extended_variants": [
+    "reference_p6_bc2",
+    "p6_bc3_750"
+  ]
+}

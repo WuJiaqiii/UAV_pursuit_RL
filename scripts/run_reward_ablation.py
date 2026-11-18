@@ -39,7 +39,7 @@ def parser():
     )
     p.add_argument("--parent-checkpoint", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--stage", choices=("screening", "full"), default="screening")
+    p.add_argument("--stage", choices=("screening", "full", "extended"), default="screening")
     p.add_argument("--variants", nargs="*")
     p.add_argument("--seeds", nargs="+", type=int)
     p.add_argument("--device", default="cuda")
@@ -78,9 +78,23 @@ def build_configs(
 ):
     base = load(plan["base_profile"], device=device, seed=seed)
     base["reward"].update(copy.deepcopy(plan["base_reward"]))
-    base["reward"].update(copy.deepcopy(variant.get("reward", {})))
+    reward_changes = variant.get("reward", {})
+    unknown_reward = set(reward_changes) - set(base["reward"])
+    if unknown_reward:
+        raise ValueError(f"Unknown reward parameter(s): {sorted(unknown_reward)}")
+    base["reward"].update(copy.deepcopy(reward_changes))
     base["training"].update(copy.deepcopy(plan["training_defaults"]))
     base["training"].update(copy.deepcopy(plan["stages"][stage_name]["training"]))
+    # Only optimization hyperparameters may vary across matched runs; changing
+    # dynamics, task geometry or model architecture invalidates this comparison.
+    train_changes = variant.get("training", {})
+    permissible = {"actor_lr", "critic_lr", "advantage_time_s", "discount_time_s",
+                   "epochs", "batch_size", "rollout_steps", "bc_segment_seconds",
+                   "bc_samples", "bc_stride"}
+    unknown_training = set(train_changes) - permissible
+    if unknown_training:
+        raise ValueError(f"Unsupported variant training parameters: {sorted(unknown_training)}")
+    base["training"].update(copy.deepcopy(train_changes))
     base["training"]["bc_updates"] = int(
         variant.get("bc_updates", plan["training_defaults"]["bc_updates"])
     )
@@ -157,6 +171,8 @@ def main(argv=None):
     unknown = sorted(set(selected) - set(variants))
     if unknown:
         raise ValueError(f"Unknown reward-ablation variants: {unknown}")
+    if args.stage not in plan["stages"]:
+        raise ValueError(f"Stage {args.stage!r} is not specified in this plan")
     stage = plan["stages"][args.stage]
     seeds = args.seeds or stage["seeds"]
     root = Path(args.out).resolve()
@@ -233,6 +249,13 @@ def main(argv=None):
                 "initialization_success_floor": config["training"]["initialization_success_floor"],
                 "task_mix": mix,
                 "reward": copy.deepcopy(config["reward"]),
+                "optimizer_hyperparameters": {
+                    k: config["training"][k] for k in (
+                        "actor_lr", "critic_lr", "advantage_time_s",
+                        "discount_time_s", "epochs", "batch_size", "rollout_steps"
+                    )
+                },
+                "cross_eval_profiles": plan.get("cross_eval_profiles", []),
             }
             print(
                 json.dumps(
@@ -391,9 +414,43 @@ def main(argv=None):
                                 "passed": passed,
                             }
                         )
+                    # Out-of-distribution diagnostics on other low-speed
+                    # geometries. Never count these as in-distribution
+                    # first-entry success or as the promotion criterion.
+                    cross_evaluations = []
+                    from pursuit_rl.ctbr.config import transfer_interface
+                    for cross_profile in plan.get("cross_eval_profiles", []):
+                        cross = load(cross_profile, device=args.device, seed=seed)
+                        cross["reward"] = copy.deepcopy(saved_config["reward"])
+                        for k in ("discount_time_s", "advantage_time_s"):
+                            cross["training"][k] = saved_config["training"][k]
+                        validate(cross)
+                        if transfer_interface(cross) != transfer_interface(saved_config):
+                            raise ValueError(f"Cross-eval interface mismatch: {cross_profile}")
+                        for cross_offset in plan.get("cross_eval_seed_offsets", [279000]):
+                            cross_seed = seed + cross_offset
+                            cross_report, _ = evaluate(
+                                model, cross, stage.get("cross_eval_episodes",
+                                                       stage["final_eval_episodes"]),
+                                cross_seed,
+                            )
+                            cross_name = Path(cross_profile).stem
+                            write_json(
+                                run_dir / "cross_eval" / f"{cross_name}_{cross_seed}.json",
+                                cross_report,
+                            )
+                            cross_evaluations.append({
+                                "profile": cross_profile,
+                                "seed": cross_seed,
+                                "success_rate": cross_report["success_rate"],
+                                "unsafe_entry_rate": cross_report["unsafe_entry_rate"],
+                                "mean_minimum_distance_m": cross_report["mean_minimum_distance_m"],
+                                "failures": cross_report["failures"],
+                            })
                     row.update(
                         final_evaluations=final_reports,
                         retention_evaluations=retention_reports,
+                        cross_evaluations=cross_evaluations,
                         retention_passed=retention_passed,
                         final_gate_passed=final_passed and retention_passed,
                     )
