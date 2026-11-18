@@ -227,7 +227,7 @@ class AsymmetricPPO(nn.Module):
     def act(self, env, obs):
         return self.predict(obs)
 
-    def update(self, buffer, aux_pd_coef=0.0):
+    def update(self, buffer, aux_pd_coef=0.0, distill_coef=0.0):
         if self.actor_optimizer is None or self.critic_optimizer is None:
             raise RuntimeError(
                 "Inference-only model cannot update; initialize a Trainer"
@@ -295,6 +295,17 @@ class AsymmetricPPO(nn.Module):
             if aux_pd_coef > 0
             else None
         )
+        retention_mask = (
+            buffer.retention_mask.reshape(-1).to(device=device)
+            if distill_coef > 0 else None
+        )
+        retention_targets = (
+            buffer.retention_targets.reshape(-1, self.action_dim).to(device=device)
+            if distill_coef > 0 else None
+        )
+        if distill_coef > 0 and (retention_targets is None or
+                                 not bool(retention_mask.any())):
+            raise ValueError("Distillation requires nonempty frozen-policy targets")
         old_lp = torch.as_tensor(buffer.logprob.reshape(-1), device=device)
         adv = torch.as_tensor(buffer.advantage.reshape(-1), device=device)
         ret = torch.as_tensor(buffer.returns.reshape(-1), device=device)
@@ -340,6 +351,9 @@ class AsymmetricPPO(nn.Module):
             "updates": 0,
             "aux_pd_loss": 0.0,
             "aux_pd_coef": float(aux_pd_coef),
+            "distill_coef": float(distill_coef),
+            "distill_loss": 0.0,
+            "distill_samples": int(retention_mask.sum().item()) if retention_mask is not None else 0,
             "actor_total_loss": 0.0,
             "actor_grad_norm": 0.0,
             "critic_grad_norm": 0.0,
@@ -393,7 +407,20 @@ class AsymmetricPPO(nn.Module):
                     aux_loss = F.smooth_l1_loss(torch.tanh(mean), teacher[ids])
                 else:
                     aux_loss = pg_loss.new_zeros(())
-                actor_loss = pg_loss - c["ent_coef"] * ent + aux_pd_coef * aux_loss
+                # Old-task policy distillation does not modify behavior actions
+                # or importance ratios; targets are frozen teacher predictions.
+                if retention_mask is not None and bool(retention_mask[ids].any()):
+                    selected = retention_mask[ids]
+                    distill_loss = F.smooth_l1_loss(
+                        torch.tanh(mean[selected]),
+                        retention_targets[ids][selected],
+                    )
+                else:
+                    distill_loss = pg_loss.new_zeros(())
+                actor_loss = (
+                    pg_loss - c["ent_coef"] * ent + aux_pd_coef * aux_loss
+                    + distill_coef * distill_loss
+                )
                 if guard and not bool(torch.isfinite(actor_loss).item()):
                     raise FloatingPointError("Nonfinite actor loss")
                 if not stop:
@@ -448,6 +475,7 @@ class AsymmetricPPO(nn.Module):
                 stats["clip_fraction"] += clip_fraction
                 stats["actor_loss"] += float(pg_loss.detach().item())
                 stats["aux_pd_loss"] += float(aux_loss.detach().item())
+                stats["distill_loss"] += float(distill_loss.detach().item())
                 stats["critic_loss"] += float(vf_loss.detach().item())
                 stats["entropy_proxy"] += float(ent.detach().item())
                 stats["actor_total_loss"] += float(actor_loss.detach().item())
@@ -467,6 +495,7 @@ class AsymmetricPPO(nn.Module):
             "clip_fraction",
             "actor_loss",
             "aux_pd_loss",
+            "distill_loss",
             "critic_loss",
             "entropy_proxy",
             "actor_total_loss",
