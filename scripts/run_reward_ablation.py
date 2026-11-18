@@ -309,10 +309,10 @@ def main(argv=None):
                             f"Resume manifest mismatch for {key}: {run_dir}"
                         )
                 resume_path = latest
-            else:
-                run_dir.mkdir(parents=True, exist_ok=True)
-                write_json(run_dir / "run_manifest.json", manifest)
 
+            # Do not precreate run_dir or write the manifest here: train()
+            # requires an empty fresh output and persists the manifest itself
+            # after that validation. Resume reuses the original manifest.
             try:
                 training_summary = train(
                     config,
@@ -320,6 +320,7 @@ def main(argv=None):
                     resume=str(resume_path) if resume_path else None,
                     init_from=None if resume_path else str(parent),
                     replay={"recent": replay, "anchor": None},
+                    run_manifest=None if resume_path else manifest,
                 )
                 ppo_complete = (
                     training_summary["physics_steps"]

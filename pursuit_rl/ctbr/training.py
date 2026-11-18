@@ -236,20 +236,27 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
     return origin, report
 
 
-def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None):
+def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None, run_manifest=None):
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
+    if resume and run_manifest is not None:
+        raise ValueError("A resumed experiment must preserve its existing run manifest")
     root = Path(out).resolve()
     tr = c["training"]
     if resume and Path(resume).resolve().parent.parent != root:
         raise ValueError("Resume inside the checkpoint original run directory")
     if not resume and root.exists() and any(root.iterdir()):
         raise FileExistsError("New run requires empty output")
+    # The trainer owns creation of its run directory. In particular, the
+    # experiment launcher must not write run_manifest.json *before* this
+    # strict emptiness check, or every fresh experiment fails immediately.
     root.mkdir(parents=True, exist_ok=True)
+    if not resume:
+        if run_manifest is not None:
+            write_json(root / "run_manifest.json", run_manifest)
+        write_json(root / "config.json", c)
     ckpt = root / "checkpoints"
     ckpt.mkdir(exist_ok=True)
-    if not resume:
-        write_json(root / "config.json", c)
     torch.manual_seed(c["seed"])
     progress = dict(
         physics_steps=0,

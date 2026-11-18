@@ -335,3 +335,58 @@ def test_long_horizon_dry_run_is_reproducible(tmp_path):
     assert run["task_mix"]["replay_envs"] == 13
     assert (out / "ablation_matrix.json").exists()
     assert not (out / "reference_p6_bc2" / "seed_42").exists()
+
+ 
+def test_fresh_train_writes_manifest_only_after_empty_directory_check(tmp_path):
+    """Fresh runs must accept a manifest without accepting stale artifacts."""
+    config = _quick_config()
+    root = tmp_path / "new_run"
+    manifest = {"schema": "test-manifest-v1", "config_fingerprint": "test"}
+    result = train(config, root, run_manifest=manifest)
+    assert result["ppo_updates"] >= 1
+    import json
+    assert json.loads((root / "run_manifest.json").read_text()) == manifest
+    assert (root / "config.json").is_file()
+    assert (root / "checkpoints" / "latest.pt").is_file()
+    with pytest.raises(FileExistsError, match="empty output"):
+        train(config, root, run_manifest=manifest)
+
+    blocked = tmp_path / "stale"
+    blocked.mkdir()
+    (blocked / "run_manifest.json").write_text("stale")
+    with pytest.raises(FileExistsError, match="empty output"):
+        train(config, blocked, run_manifest=manifest)
+
+
+def test_fresh_ablation_runner_does_not_precreate_manifest(tmp_path, monkeypatch):
+    """Regression: the runner used to write manifest before calling train()."""
+    from pathlib import Path
+    from pursuit_rl.ctbr.checkpoint import save
+    from scripts.run_reward_ablation import main
+
+    config = _quick_config()
+    parent = tmp_path / "parent.pt"
+    save(parent, new_model(config, optimizers=False), config,
+         {"physics_steps": 0}, "preflight_parent")
+    root = tmp_path / "campaign"
+
+    def check_new_run(c, out, **kwargs):
+        directory = Path(out)
+        assert not directory.exists() or not any(directory.iterdir())
+        assert kwargs["resume"] is None
+        assert kwargs["run_manifest"]["schema"] == "pursuit-reward-ablation-run-manifest-v2"
+        assert kwargs["run_manifest"]["config_fingerprint"]
+        raise RuntimeError("intentional preflight stop")
+
+    monkeypatch.setattr("scripts.run_reward_ablation.train", check_new_run)
+    with pytest.raises(RuntimeError, match="intentional preflight"):
+        main([
+            "--plan", "configs/experiments/04_low_tail_long_optimization.json",
+            "--parent-checkpoint", str(parent), "--out", str(root),
+            "--stage", "screening", "--variants", "reference_p6_bc2",
+            "--seeds", "42", "--device", "cpu"
+        ])
+    # The runner records the failure without mislabeling it as successful.
+    report = __import__("json").loads((root / "ablation_matrix.json").read_text())
+    assert report["results"][0]["status"] == "failed"
+    assert (root / "reference_p6_bc2" / "seed_42" / "failure.json").exists()
