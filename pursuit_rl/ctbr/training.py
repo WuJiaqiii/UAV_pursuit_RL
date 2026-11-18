@@ -157,7 +157,77 @@ def initialization_validation(model, c, root, progress, label):
     return report
 
 
-def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset):
+
+def replay_fingerprints(replay):
+    """Stable task contracts, including mixture fractions, for safe resume."""
+    result = {}
+    for key, value in (replay or {}).items():
+        if key == "tasks":
+            result[key] = [
+                dict(profile=fingerprint(item["config"]), fraction=float(item["fraction"]))
+                for item in value
+            ]
+        else:
+            result[key] = fingerprint(value) if value is not None else None
+    return result
+
+
+def generalization_contract(distillation=None, bc_profiles=None, validation_profiles=None):
+    import hashlib
+    teachers = {}
+    if distillation is not None:
+        if not 0 <= float(distillation.get("coefficient", 0)) <= 10:
+            raise ValueError("Invalid frozen-policy distillation coefficient")
+        for task, path in sorted(distillation.get("teachers", {}).items()):
+            data = Path(path)
+            if not data.is_file():
+                raise FileNotFoundError(f"Frozen teacher checkpoint missing: {data}")
+            teachers[task] = hashlib.sha256(data.read_bytes()).hexdigest()
+        if float(distillation.get("coefficient", 0)) > 0 and not teachers:
+            raise ValueError("Distillation needs at least one teacher checkpoint")
+    return dict(
+        distill_coefficient=float((distillation or {}).get("coefficient", 0)),
+        teacher_sha256=teachers,
+        bc_profiles=[fingerprint(c) for c in (bc_profiles or [])],
+        validation_profiles=[fingerprint(c) for c in (validation_profiles or [])],
+    )
+
+
+def evaluate_generalization(model, profiles, episodes, seed, root, label):
+    """Hold-out all tasks; select by worst-task performance, not tail only."""
+    reports = {}
+    steps = 0
+    for index, profile in enumerate(profiles):
+        task_name = profile["task"]["name"]
+        report, _ = evaluate(model, profile, episodes, seed + index * 10007)
+        reports[task_name] = dict(
+            successes=report["successes"],
+            episodes=report["episodes"],
+            success_rate=report["success_rate"],
+            unsafe_entry_rate=report["unsafe_entry_rate"],
+            mean_minimum_distance_m=report["mean_minimum_distance_m"],
+            failures=report["failures"],
+        )
+        steps += sum(round(ep["time"] / profile["physics"]["dt"])
+                     for ep in report["episodes_detail"])
+    rates = [x["success_rate"] for x in reports.values()]
+    unsafe = [x["unsafe_entry_rate"] for x in reports.values()]
+    outcome = dict(
+        label=label, tasks=reports,
+        worst_task_success_rate=min(rates),
+        macro_success_rate=sum(rates) / len(rates),
+        mean_unsafe_entry_rate=sum(unsafe) / len(unsafe),
+        selection_score=[
+            min(rates),
+            sum(rates) / len(rates),
+            -sum(unsafe) / len(unsafe),
+        ],
+    )
+    write_json(root / f"generalization_{label}.json", outcome)
+    return outcome, steps
+
+
+def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset, bc_profiles=None):
     """Run one or more DAgger rounds; BC updates are divided across rounds."""
     tr = c["training"]
     total_updates = tr["bc_updates"]
@@ -175,11 +245,26 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
     last_loss = None
     report = None
     for index, round_updates in enumerate(updates_per_round):
-        states, labels, interactions = imitation_data(
-            c,
-            model=model if transfer else None,
-            seed=c["seed"] + seed_offset + index * 100003,
-        )
+        profiles = bc_profiles if bc_profiles is not None else [c]
+        round_states, round_labels, interactions = [], [], 0
+        samples_per_profile = max(1, tr["bc_samples"] // len(profiles))
+        for profile_index, profile in enumerate(profiles):
+            profile_copy = copy.deepcopy(profile)
+            profile_copy["training"]["bc_samples"] = (
+                tr["bc_samples"] - samples_per_profile * (len(profiles) - 1)
+                if profile_index == len(profiles) - 1 else samples_per_profile
+            )
+            states, labels, used = imitation_data(
+                profile_copy,
+                model=model if transfer else None,
+                seed=c["seed"] + seed_offset + index * 100003
+                + profile_index * 131071,
+            )
+            round_states.append(states)
+            round_labels.append(labels)
+            interactions += used
+        states = torch.cat(round_states)
+        labels = torch.cat(round_labels)
         aggregated_states.append(states)
         aggregated_labels.append(labels)
         train_states = torch.cat(aggregated_states)
@@ -236,13 +321,26 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset)
     return origin, report
 
 
-def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None, run_manifest=None):
+def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None,
+          run_manifest=None, bc_profiles=None, distillation=None,
+          validation_profiles=None):
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
     if resume and run_manifest is not None:
         raise ValueError("A resumed experiment must preserve its existing run manifest")
     root = Path(out).resolve()
     tr = c["training"]
+    contract = generalization_contract(distillation, bc_profiles, validation_profiles)
+    if validation_profiles:
+        from .config import interface
+        for profile in validation_profiles:
+            if interface(profile) != interface(c):
+                raise ValueError("Validation task changes the policy interface")
+    if bc_profiles:
+        from .config import interface
+        for profile in bc_profiles:
+            if interface(profile) != interface(c):
+                raise ValueError("DAgger task changes the policy interface")
     if resume and Path(resume).resolve().parent.parent != root:
         raise ValueError("Resume inside the checkpoint original run directory")
     if not resume and root.exists() and any(root.iterdir()):
@@ -272,9 +370,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         parent_physics_steps=0,
         cumulative_ppo_physics_steps=0,
         parent=None,
-        replay_fingerprints={
-            k: fingerprint(v) if v else None for k, v in (replay or {}).items()
-        },
+        replay_fingerprints=replay_fingerprints(replay),
+        generalization_contract=contract,
         prediction_updates=0,
         mc_fit_updates=0,
         mc_calibration_rounds=0,
@@ -311,6 +408,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             raise ValueError(
                 "Resume task mixture changed; use the same curriculum launcher"
             )
+        if progress.get("generalization_contract") != contract:
+            raise ValueError("Resume generalization/DAgger/distillation settings changed")
         torch.set_rng_state(saved["torch_rng"])
         if saved["cuda_rng"] is not None and str(model.device).startswith("cuda"):
             torch.cuda.set_rng_state_all(saved["cuda_rng"])
@@ -350,7 +449,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             del parent
             if tr["bc_updates"]:
                 origin, bc_report = run_bc_initialization(
-                    c, model, root, ckpt, progress, transfer=True, seed_offset=20000
+                    c, model, root, ckpt, progress, transfer=True,
+                    seed_offset=20000, bc_profiles=bc_profiles
                 )
                 if bc_report["success_rate"] < tr["initialization_success_floor"]:
                     details = dict(
@@ -376,7 +476,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     model.actor[-1].bias.zero_()
             if tr["bc_updates"]:
                 origin, bc_report = run_bc_initialization(
-                    c, model, root, ckpt, progress, transfer=False, seed_offset=10000
+                    c, model, root, ckpt, progress, transfer=False,
+                    seed_offset=10000, bc_profiles=bc_profiles
                 )
                 if bc_report["success_rate"] < tr["initialization_success_floor"]:
                     details = dict(
@@ -431,15 +532,28 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         progress["validation_physics_steps"] += sum(
             round(e["time"] / c["physics"]["dt"]) for e in initial["episodes_detail"]
         )
-        progress["best_score"] = list(score(initial))
-        progress["initial_score"] = list(score(initial))
+        if validation_profiles:
+            joint, extra_steps = evaluate_generalization(
+                model, validation_profiles, tr["validation_episodes"],
+                tr["validation_seed"], root, "initial",
+            )
+            progress["validation_physics_steps"] += extra_steps
+            initial_score = joint["selection_score"]
+        else:
+            initial_score = list(score(initial))
+        progress["best_score"] = list(initial_score)
+        progress["initial_score"] = list(initial_score)
         progress["best_origin"] = origin
         progress["cumulative_ppo_physics_steps"] = progress["parent_physics_steps"]
-        feasible = passed(initial, c)
+        feasible = (
+            joint["worst_task_success_rate"] >= tr["minimum_success"]
+            and joint["mean_unsafe_entry_rate"] == 0
+            if validation_profiles else passed(initial, c)
+        )
         if feasible and promotion_check is not None:
             feasible = promotion_check(model, c, progress)
         if feasible:
-            progress["best_feasible_score"] = list(score(initial))
+            progress["best_feasible_score"] = list(initial_score)
             progress["best_feasible_origin"] = origin
             progress["promotion_passed"] = promotion_check is not None
             save(ckpt / "best_feasible.pt", model, c, progress, origin)
@@ -453,7 +567,20 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             unsafe_entry_rate=initial["unsafe_entry_rate"],
         )
     write_json(root / "config.json", c)
+    frozen_teachers = {}
+    distill_coef = float((distillation or {}).get("coefficient", 0))
+    if distill_coef > 0:
+        for task, path in distillation["teachers"].items():
+            previous, previous_config, _ = load(path, c["device"])
+            if transfer_interface(previous_config) != transfer_interface(c):
+                raise ValueError(f"Frozen teacher {task} has incompatible architecture")
+            previous.eval().requires_grad_(False)
+            frozen_teachers[task] = previous
     env = training_env(c, replay, seed=c["seed"] + 7919 * progress["ppo_updates"])
+    if distill_coef > 0:
+        missing = set(frozen_teachers) - set(env.task_slices)
+        if missing:
+            raise ValueError(f"Frozen policy task(s) absent from rollout: {sorted(missing)}")
     emit(
         root,
         "training_distribution",
@@ -490,6 +617,13 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 "advantage_abs_threshold": 100.0,
             },
         )
+        if distill_coef > 0:
+            buf.retention_mask = torch.zeros(
+                (ticks, env.n), device=env.device, dtype=torch.bool,
+            )
+            buf.retention_targets = torch.zeros(
+                (ticks, env.n, 4), device=env.device,
+            )
         buf.physics = copy.deepcopy(c["physics"])
         buf.action_semantics = "direct-ctbr-first-entry-v1"
         buf.decision_dt = env.decision_dt
@@ -504,6 +638,14 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         for tick in range(ticks):
             try:
                 action, raw, lp, value_pred = model.sample_tensor(obs, priv)
+                if distill_coef > 0:
+                    with torch.no_grad():
+                        for task_name, teacher_model in frozen_teachers.items():
+                            slot = env.task_slices[task_name]
+                            buf.retention_targets[tick, slot] = (
+                                teacher_model.predict_tensor(obs[slot])
+                            )
+                            buf.retention_mask[tick, slot] = True
                 (nobs, npriv), reward, term, trunc, completed = env.step(action, raw)
                 prediction_positions[tick] = target_positions(env).float()
                 rollout_physics_steps += env.last_physics_steps
@@ -598,7 +740,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             progress=copy.deepcopy(progress),
         )
         try:
-            stats = model.update(buf, aux_pd_coef=0.0)
+            stats = model.update(buf, aux_pd_coef=0.0, distill_coef=distill_coef)
         except Exception as exc:
             if not (root / "first_anomaly.pt").exists():
                 torch.save(
@@ -737,26 +879,52 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 stochastic_mc_rmse=cal["critic_mc_rmse"],
                 stochastic_bias=cal["critic_bias"],
             )
-            if improved(report, progress["best_score"]):
-                progress["best_score"] = list(score(report))
+            if validation_profiles:
+                joint, extra_steps = evaluate_generalization(
+                    model, validation_profiles, tr["validation_episodes"],
+                    tr["validation_seed"], root, str(progress["physics_steps"]),
+                )
+                progress["validation_physics_steps"] += extra_steps
+                candidate_score = joint["selection_score"]
+                candidate_feasible = (
+                    joint["worst_task_success_rate"] >= tr["minimum_success"]
+                    and joint["mean_unsafe_entry_rate"] == 0
+                )
+                emit(
+                    root, "generalization_validation",
+                    physics_steps=progress["physics_steps"],
+                    **{k: v for k, v in joint.items() if k != "tasks"},
+                    task_results=joint["tasks"],
+                )
+            else:
+                candidate_score = list(score(report))
+                candidate_feasible = passed(report, c)
+            if tuple(candidate_score) > tuple(progress["best_score"]):
+                progress["best_score"] = list(candidate_score)
                 progress["best_origin"] = "ppo"
-                progress["selected_improved_over_initial"] = improved(
-                    report, progress["initial_score"]
+                progress["selected_improved_over_initial"] = (
+                    tuple(candidate_score) > tuple(progress["initial_score"])
+                    if validation_profiles
+                    else improved(report, progress["initial_score"])
                 )
                 save(ckpt / "best.pt", model, c, progress, "ppo")
                 save(ckpt / "best_current.pt", model, c, progress, "ppo")
-            feasible = passed(report, c)
+            feasible = candidate_feasible
             if feasible and promotion_check is not None:
                 feasible = promotion_check(model, c, progress)
             if feasible:
                 progress["promotion_passed"] = promotion_check is not None
-                if progress["best_feasible_score"] is None or improved(
-                    report, progress["best_feasible_score"]
+                if progress["best_feasible_score"] is None or (
+                    tuple(candidate_score) > tuple(progress["best_feasible_score"])
+                    if validation_profiles
+                    else improved(report, progress["best_feasible_score"])
                 ):
-                    progress["best_feasible_score"] = list(score(report))
+                    progress["best_feasible_score"] = list(candidate_score)
                     progress["best_feasible_origin"] = "ppo"
-                    progress["best_feasible_improved_over_initial"] = improved(
-                        report, progress["initial_score"]
+                    progress["best_feasible_improved_over_initial"] = (
+                        tuple(candidate_score) > tuple(progress["initial_score"])
+                        if validation_profiles
+                        else improved(report, progress["initial_score"])
                     )
                     save(ckpt / "best_feasible.pt", model, c, progress, "ppo")
             next_validation = (
@@ -791,6 +959,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         physics_hz=1 / env.dt,
         decision_hz=1 / env.decision_dt,
         task_environment_counts=env.task_counts,
+        distillation_coefficient=distill_coef,
+        generalization_profiles=(
+            [p["task"]["name"] for p in validation_profiles]
+            if validation_profiles else None
+        ),
         stop_reason=(
             "curriculum_gate_passed"
             if progress["promotion_passed"]
