@@ -284,3 +284,62 @@ def test_v9_summary_csv_separates_controllers_and_variants(tmp_path):
     ppo = next(row for row in records if row["method"] == "ppo_v9")
     assert float(ppo["delta_success_vs_pn"]) == pytest.approx(-.2)
     assert ppo["distribution"] == "in_distribution"
+
+
+def test_precheckpoint_interruption_is_archived_not_deleted(tmp_path):
+    """Power loss during DAgger can safely restart from the parent checkpoint."""
+    plan = json.loads(
+        Path("configs/experiments/05_v9_generalization.json").read_text()
+    )
+    from pathlib import Path
+    c = quick()
+    profiles = {}
+    for name in plan["profiles"]:
+        profile = copy.deepcopy(c)
+        profile["task"]["name"] = name
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(profile))
+        profiles[name] = str(path)
+    plan["profiles"] = profiles
+    plan["num_envs"] = 8
+    plan["stages"]["pilot"]["seeds"] = [42]
+    plan["stages"]["pilot"]["variants"] = ["joint_ppo"]
+    plan["stages"]["pilot"]["final_eval_episodes"] = 2
+    plan["stages"]["pilot"]["training"] = dict(
+        physics_steps=80, rollout_steps=2, batch_size=16, epochs=1,
+        validation_every=80, validation_episodes=2, critic_updates=0,
+        mc_episodes=2, mc_calibration_every_updates=0,
+    )
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(json.dumps(plan))
+    checkpoint = tmp_path / "parent.pt"
+    save(checkpoint, new_model(c, optimizers=False), c, {
+        "physics_steps": 0, "ppo_updates": 0,
+        "cumulative_ppo_physics_steps": 0,
+    }, "smoke")
+    root = tmp_path / "campaign"
+    root.mkdir()
+    run_dir = root / "pilot/joint_ppo/seed_42"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_manifest.json").write_text('{"incomplete": true}')
+    (run_dir / "partial_log.txt").write_text("preserve-me")
+    args = [
+        "--plan", str(plan_file), "--parent-checkpoint", str(checkpoint),
+        "--static-checkpoint", str(checkpoint), "--out", str(root),
+        "--stage", "pilot", "--device", "cpu", "--resume-existing",
+    ]
+    from scripts.run_generalization_campaign import checksum
+    from pursuit_rl.ctbr.checkpoint import source_fingerprint
+    from pursuit_rl.ctbr.checkpoint import write_json
+    write_json(root / "campaign_manifest.json", {
+        "schema": plan["schema"], "plan_sha256": checksum(plan_file),
+        "parent_sha256": checksum(checkpoint),
+        "static_teacher_sha256": checksum(checkpoint),
+        "source_fingerprint": source_fingerprint(),
+    })
+    result = run(args)
+    assert result["stages"]["pilot"]["variants"]["joint_ppo"][0]["status"] == "completed"
+    archived = root / "pilot/joint_ppo/seed_42__precheckpoint_attempt_01"
+    assert (archived / "partial_log.txt").read_text() == "preserve-me"
+    assert (archived / "run_manifest.json").exists()
+    assert (run_dir / "checkpoints/latest.pt").exists()

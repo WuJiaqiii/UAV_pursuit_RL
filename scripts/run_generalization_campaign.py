@@ -341,16 +341,35 @@ def run(argv=None):
                                 f"Run already exists: {run_dir}"
                             )
                         latest = run_dir / "checkpoints" / "latest.pt"
-                        if not latest.exists():
-                            raise FileNotFoundError(
-                                f"Cannot resume {run_dir} without latest.pt; "
-                                "preserve it and start a new campaign for a restart"
-                            )
                         if (run_dir / "first_anomaly.pt").exists():
                             raise RuntimeError(
                                 f"Numerically invalid run cannot be resumed: {run_dir}"
                             )
-                        resume = str(latest)
+                        if not latest.exists():
+                            if (run_dir / "training_summary.json").exists():
+                                raise FileNotFoundError(
+                                    f"Completed training has no latest.pt: {run_dir}"
+                                )
+                            # Interrupted before the first PPO checkpoint (for
+                            # example in BC or Critic warmup): archive the entire
+                            # attempt intact, then restart from the v8 parent.
+                            # Never silently overwrite or delete experiment data.
+                            count = 1
+                            while True:
+                                archive = run_dir.with_name(
+                                    f"{run_dir.name}__precheckpoint_attempt_{count:02d}"
+                                )
+                                if not archive.exists():
+                                    break
+                                count += 1
+                            run_dir.rename(archive)
+                            print(
+                                f"Archived pre-checkpoint run {archive}; restarting {run_dir}",
+                                flush=True,
+                            )
+                            resume = None
+                        else:
+                            resume = str(latest)
                     else:
                         resume = None
                     distill_coef = float(v.get("distill_coef", 0.0))

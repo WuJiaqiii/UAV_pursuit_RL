@@ -66,9 +66,12 @@ After a machine reboot, invoke the identical launcher command; it detects
 the campaign manifest and supplies `--resume-existing`. If an incomplete
 run has `checkpoints/latest.pt`, the trainer restores Actor, Critic,
 optimizers and RNG; unfinished episodes restart. A run stopped before
-the first PPO checkpoint cannot safely resume: it is reported as such
-and must be restarted in a new clean directory. No output is silently
-deleted or overwritten. The SHA256 of the plan, parent and static teacher,
+the first PPO checkpoint cannot safely resume BC mid-round. On the next
+`--resume-existing` run, the launcher **archives the entire unfinished
+directory** as `seed_XX__precheckpoint_attempt_NN` and cleanly restarts
+that one experiment from the original parent. The original outputs are
+preserved without overwriting or deletion. A run containing a numerical
+`first_anomaly.pt` is never automatically resumed or restarted. The SHA256 of the plan, parent and static teacher,
 and the repository Python source fingerprint must match.
 
 For a preflight that generates no GPU rollouts:
