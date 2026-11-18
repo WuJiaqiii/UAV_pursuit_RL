@@ -291,7 +291,6 @@ def test_precheckpoint_interruption_is_archived_not_deleted(tmp_path):
     plan = json.loads(
         Path("configs/experiments/05_v9_generalization.json").read_text()
     )
-    from pathlib import Path
     c = quick()
     profiles = {}
     for name in plan["profiles"]:
