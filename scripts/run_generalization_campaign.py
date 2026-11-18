@@ -236,6 +236,11 @@ def run(argv=None):
     else:
         root.mkdir(parents=True, exist_ok=True)
         write_json(manifest_path, manifest)
+    if args.stage == "all" and (args.variants or args.seeds):
+        raise ValueError(
+            "--stage all uses pre-registered, matched seeds and automatic "
+            "variant promotion; specify a single --stage for manual subsets"
+        )
     stages = ["pilot", "full", "confirmation"] if args.stage == "all" else [args.stage]
     progress_path = root / "campaign_results.json"
     results = (
@@ -296,6 +301,10 @@ def run(argv=None):
                             raise FileNotFoundError(
                                 f"Cannot resume {run_dir} without latest.pt; "
                                 "preserve it and start a new campaign for a restart"
+                            )
+                        if (run_dir / "first_anomaly.pt").exists():
+                            raise RuntimeError(
+                                f"Numerically invalid run cannot be resumed: {run_dir}"
                             )
                         resume = str(latest)
                     else:
@@ -373,11 +382,21 @@ def run(argv=None):
                             raise
                 rows[:] = [x for x in rows if x["seed"] != seed] + [row]
                 write_json(progress_path, results)
-        stage_result["status"] = "completed"
-        stage_result["summary"] = aggregate([
-            r["evaluations"] for run_rows in stage_result["variants"].values()
-            for r in run_rows if r.get("status") == "completed"
-        ])
+        stage_result["status"] = (
+            "completed" if all(
+                r.get("status") in ("completed", "dry_run")
+                for rows in stage_result["variants"].values() for r in rows
+            ) else "completed_with_failures"
+        )
+        # Never pool episodes across different candidate policies; statistical
+        # summaries are per variant and keep independent seeds separate.
+        stage_result["summary_by_variant"] = {
+            name: aggregate([
+                row["evaluations"] for row in rows
+                if row.get("status") == "completed"
+            ])
+            for name, rows in stage_result["variants"].items()
+        }
         write_json(progress_path, results)
         if args.dry_run:
             # Dry runs should not accidentally promote candidates on empty

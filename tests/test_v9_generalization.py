@@ -178,3 +178,60 @@ def test_matched_reference_controllers_report_same_initial_digest(tmp_path):
     }
     assert len({r["initial_state_digest"] for r in reports[task].values()}) == 1
     assert all(r["episodes"] == 2 for r in reports[task].values())
+
+
+def test_unattended_pipeline_full_smoke_and_resume(tmp_path):
+    """A real, tiny PPO run must reach checkpoint, baselines and summary."""
+    plan = json.loads(
+        Path("configs/experiments/05_v9_generalization.json").read_text()
+    )
+    parent_config = quick()
+    paths = {}
+    for name in ("01_static", "02_low_tail", "03_low_head_on", "04_low_random"):
+        profile = copy.deepcopy(parent_config)
+        profile["task"]["name"] = name
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(profile))
+        paths[name] = str(path)
+    plan["profiles"] = paths
+    plan["num_envs"] = 8
+    plan["stages"]["pilot"]["seeds"] = [42]
+    plan["stages"]["pilot"]["variants"] = ["joint_ppo"]
+    plan["stages"]["pilot"]["final_eval_episodes"] = 2
+    plan["stages"]["pilot"]["training"] = dict(
+        physics_steps=80, rollout_steps=2, batch_size=16,
+        epochs=1, validation_every=80, validation_episodes=2,
+        critic_updates=0, mc_episodes=2,
+        mc_calibration_every_updates=0,
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan))
+    parent_path = tmp_path / "parent.pt"
+    save(
+        parent_path, new_model(parent_config, optimizers=False),
+        parent_config,
+        {"physics_steps": 0, "ppo_updates": 0,
+         "cumulative_ppo_physics_steps": 0},
+        "tiny_parent",
+    )
+    out = tmp_path / "real_campaign"
+    argv = [
+        "--plan", str(plan_path),
+        "--parent-checkpoint", str(parent_path),
+        "--static-checkpoint", str(parent_path),
+        "--out", str(out),
+        "--stage", "pilot", "--device", "cpu",
+    ]
+    result = run(argv)
+    row = result["stages"]["pilot"]["variants"]["joint_ppo"][0]
+    assert row["status"] == "completed"
+    assert row["physics_steps"] >= 80
+    assert set(row["evaluations"]) == set(paths)
+    assert all(len(x) == 5 for x in row["evaluations"].values())
+    assert len(result["stages"]["pilot"]["summary_by_variant"]) == 1
+    ckpt = out / "pilot/joint_ppo/seed_42/checkpoints/latest.pt"
+    assert ckpt.exists()
+    checkpoint_bytes = ckpt.read_bytes()
+    next_result = run(argv + ["--resume-existing"])
+    assert next_result["stages"]["pilot"]["variants"]["joint_ppo"][0]["status"] == "completed"
+    assert ckpt.read_bytes() == checkpoint_bytes
