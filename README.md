@@ -105,3 +105,12 @@ these are not included in the current-task promotion score.
 
 The new plan is a proposed research campaign; the long GPU experiments
 are not included in automated CI and have not been executed here.
+
+## v9: unattended multi-task generalization
+
+A single command launches a background four-task PPO/DAgger/distillation
+campaign and compares checkpoints against PN, PD, PN–PD and the v8 parent.
+See [v9 runbook](docs/V9_UNATTENDED_GENERALIZATION.md) and
+`configs/experiments/05_v9_generalization.json`.
+The campaign is self-contained, checkpoint-based resumable, and selects by
+worst-task success rather than low-tail success alone.

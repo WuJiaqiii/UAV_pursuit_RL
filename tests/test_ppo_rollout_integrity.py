@@ -36,14 +36,14 @@ def test_rollout_values_are_not_overwritten_by_reward_components(tmp_path, monke
     """The buffer must retain the Critic prediction for each pre-action state."""
     original_update = AsymmetricPPO.update
 
-    def verify_buffer_values(model, buffer, aux_pd_coef=0.0):
+    def verify_buffer_values(model, buffer, aux_pd_coef=0.0, distill_coef=0.0):
         expected = torch.stack(
             [model.values_tensor(buffer.priv[tick]) for tick in range(buffer.priv.shape[0])]
         )
         # Batched GEMM kernels can differ by a few float32 ulps when the leading
         # dimension changes; the per-tick call mirrors sample_tensor's shape.
         assert torch.allclose(buffer.values, expected, rtol=0.0, atol=1e-6)
-        return original_update(model, buffer, aux_pd_coef=aux_pd_coef)
+        return original_update(model, buffer, aux_pd_coef=aux_pd_coef, distill_coef=distill_coef)
 
     monkeypatch.setattr(AsymmetricPPO, "update", verify_buffer_values)
     result = train(_quick_config(), tmp_path / "value_integrity")

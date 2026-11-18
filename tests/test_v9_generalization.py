@@ -1,0 +1,180 @@
+"""v9 unattended generalization: mixture, distillation, DAgger and campaign safety."""
+import copy
+import json
+from pathlib import Path
+
+import pytest
+import torch
+
+from pursuit_rl.ctbr.checkpoint import new_model, save, load as load_checkpoint
+from pursuit_rl.ctbr.config import load, validate
+from pursuit_rl.ctbr.mixture import TaskMixtureBatch
+from pursuit_rl.ctbr.training import train
+from scripts.run_generalization_campaign import (
+    model_configs, aggregate, stage_candidates, run, evaluate_methods,
+)
+
+
+@pytest.fixture(autouse=True)
+def deterministic_cpu():
+    torch.manual_seed(17)
+    torch.set_num_threads(1)
+
+
+def quick(task="02_low_tail"):
+    c = load("configs/first_entry_highspeed/01_static.json")
+    c["num_envs"] = 8
+    c["prediction"]["enabled"] = False
+    c["task"].update(
+        name=task, duration=0.02, distance=[0.65, 0.75],
+        speed=[0.0, 0.0], kind="hover",
+    )
+    c["training"].update(
+        physics_steps=80, rollout_steps=8, batch_size=16, epochs=1,
+        bc_updates=0, bc_rounds=1, critic_updates=0,
+        mc_episodes=2, validation_episodes=2,
+        validation_every=80, mc_calibration_every_updates=0,
+        prediction_updates_enabled=False, initialization_success_floor=0.0,
+        replay_recent_fraction=0, replay_anchor_fraction=0,
+    )
+    return validate(c)
+
+
+def four(c):
+    tasks = []
+    names = ["01_static", "03_low_head_on", "04_low_random"]
+    weights = [0.2, 0.25, 0.3]
+    for name, weight in zip(names, weights):
+        cc = copy.deepcopy(c)
+        cc["task"]["name"] = name
+        tasks.append({"config": validate(cc), "fraction": weight})
+    return tasks
+
+
+def test_four_task_allocation_and_one_step():
+    c = quick()
+    c["num_envs"] = 64
+    tasks = four(c)
+    for item in tasks:
+        item["config"]["num_envs"] = 64
+    env = TaskMixtureBatch(c, None, None, seed=100, extra_tasks=tasks)
+    assert env.task_counts == {
+        "02_low_tail": 16, "01_static": 13,
+        "03_low_head_on": 16, "04_low_random": 19,
+    }
+    assert set(env.task_slices) == set(env.task_counts)
+    a, priv = env.observe()
+    assert a.shape[0] == priv.shape[0] == 64
+    action = torch.zeros(64, 4)
+    (_, _), reward, done, _, _ = env.step(action, action)
+    assert reward.shape == done.shape == (64,)
+    assert torch.isfinite(reward).all()
+    with pytest.raises(ValueError, match="Duplicate"):
+        TaskMixtureBatch(c, None, None, seed=100,
+                         extra_tasks=tasks + [tasks[0]])
+
+
+def test_trainer_multitask_distillation_smoke_and_resume_contract(tmp_path):
+    c = quick()
+    tasks = four(c)
+    parent_path = tmp_path / "parent.pt"
+    static_path = tmp_path / "static.pt"
+    model = new_model(c, optimizers=False)
+    progress = {"physics_steps": 0, "ppo_updates": 0,
+                "cumulative_ppo_physics_steps": 0}
+    save(parent_path, model, c, progress, "test_parent")
+    static = copy.deepcopy(c)
+    static["task"]["name"] = "01_static"
+    save(static_path, new_model(static, optimizers=False),
+         static, progress, "test_static")
+    distill = dict(
+        coefficient=0.05,
+        teachers={"01_static": str(static_path), "02_low_tail": str(parent_path)},
+    )
+    profiles = [c] + [item["config"] for item in tasks]
+    root = tmp_path / "four_task"
+    result = train(
+        c, root, init_from=str(parent_path),
+        replay={"tasks": tasks}, distillation=distill,
+        validation_profiles=profiles,
+    )
+    assert result["ppo_updates"] >= 1
+    assert result["task_environment_counts"] == {
+        "02_low_tail": 2, "01_static": 2,
+        "03_low_head_on": 2, "04_low_random": 2,
+    }
+    metrics = [
+        json.loads(line)
+        for line in (root / "metrics.jsonl").read_text().splitlines()
+    ]
+    update = next(row for row in metrics if row["event"] == "ppo_update")
+    assert update["metrics"]["distill_samples"] > 0
+    assert update["metrics"]["distill_coef"] == pytest.approx(0.05)
+    assert (root / "generalization_initial.json").exists()
+    saved_model, _, saved = load_checkpoint(root / "checkpoints/latest.pt")
+    assert saved["progress"]["generalization_contract"]["distill_coefficient"] == .05
+    with pytest.raises(ValueError, match="generalization"):
+        train(c, root, resume=str(root / "checkpoints/latest.pt"),
+              replay={"tasks": tasks},
+              validation_profiles=profiles, distillation=None)
+
+
+def test_campaign_plan_and_dry_run(tmp_path):
+    plan_path = Path("configs/experiments/05_v9_generalization.json")
+    plan = json.loads(plan_path.read_text())
+    c = quick()
+    variants = {v["name"]: v for v in plan["variants"]}
+    for name, variant in variants.items():
+        primary, others, profiles = model_configs(
+            c, plan, variant, "pilot", 42, "cpu",
+        )
+        assert len(others) == 3
+        assert len(profiles) == 4
+        assert primary["task"]["radius"] == 0.5
+        assert primary["physics"]["max_load_factor_g"] == 2.5
+        assert primary["task"]["entry_relative_speed_max_mps"] == 15
+    fake = tmp_path / "p.pt"
+    save(fake, new_model(c, optimizers=False), c,
+         {"physics_steps": 0, "ppo_updates": 0,
+          "cumulative_ppo_physics_steps": 0}, "test_parent")
+    results = run([
+        "--plan", str(plan_path),
+        "--parent-checkpoint", str(fake),
+        "--static-checkpoint", str(fake),
+        "--out", str(tmp_path / "campaign"),
+        "--stage", "pilot", "--variants", "joint_ppo",
+        "--seeds", "42", "--device", "cpu", "--dry-run",
+    ])
+    entry = results["stages"]["pilot"]["variants"]["joint_ppo"][0]
+    assert entry["status"] == "dry_run"
+    assert entry["ppo_physics_steps_budget"] == 8_000_000
+    assert not (tmp_path / "campaign/pilot/joint_ppo/seed_42").exists()
+    assert (tmp_path / "campaign/campaign_manifest.json").exists()
+
+
+def test_promotion_ranks_worst_task_and_rejects_incomplete():
+    plan = json.loads(Path("configs/experiments/05_v9_generalization.json").read_text())
+    reports = {"pilot": {"variants": {}}}
+    for name, score in [("good", 0.8), ("bad", 0.0)]:
+        reports["pilot"]["variants"][name] = [
+            {"status": "completed", "evaluations": {
+                task: {"ppo_v9": {"success_rate": score}}
+                for task in plan["profiles"]
+            }} for _ in (42, 43)
+        ]
+    assert stage_candidates("full", plan, reports) == ["good"]
+    assert aggregate([]) == {}
+
+
+def test_matched_reference_controllers_report_same_initial_digest(tmp_path):
+    c = quick()
+    model = new_model(c, optimizers=False)
+    reports = evaluate_methods(
+        model, model, [c], episodes=2, seed=73, dest=tmp_path
+    )
+    task = c["task"]["name"]
+    assert set(reports[task]) == {
+        "ppo_v9", "ppo_v8", "pn_ctbr", "pd_ctbr", "pn_pd_ctbr"
+    }
+    assert len({r["initial_state_digest"] for r in reports[task].values()}) == 1
+    assert all(r["episodes"] == 2 for r in reports[task].values())
