@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import traceback
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -168,8 +169,31 @@ def aggregate(per_seed):
             denominator = 1 + z*z/n
             center = (p + z*z/(2*n))/denominator
             half = z*math.sqrt(p*(1-p)/n + z*z/(4*n*n))/denominator
+            failures = Counter()
+            for item in records:
+                failures.update(item["failures"])
+            def average(key, count_key="episodes"):
+                parts = [
+                    (item.get(key), item[count_key]) for item in records
+                    if item.get(key) is not None and item[count_key] > 0
+                ]
+                total_weight = sum(weight for _, weight in parts)
+                return (
+                    sum(value * weight for value, weight in parts) / total_weight
+                    if total_weight else None
+                )
             result[task][method] = dict(
                 successes=k, episodes=n, success_rate=p,
+                unsafe_entry_rate=average("unsafe_entry_rate"),
+                mean_entry_time_s=average("mean_entry_time_s", "successes"),
+                mean_entry_relative_speed_mps=average(
+                    "mean_entry_relative_speed_mps", "successes"
+                ),
+                mean_minimum_distance_m=average("mean_minimum_distance_m"),
+                mean_action_saturation_fraction=average(
+                    "mean_action_saturation_fraction"
+                ),
+                failures=dict(failures),
                 wilson_95=[
                     0.0 if k == 0 else max(0.0, center-half),
                     1.0 if k == n else min(1.0, center+half)
@@ -436,6 +460,8 @@ def run(argv=None):
             for name, rows in stage_result["variants"].items()
         }
         write_json(progress_path, results)
+        from scripts.summarize_v9_campaign import to_csv
+        to_csv(results, root / "comparison_summary.csv")
         if args.dry_run:
             # Dry runs should not accidentally promote candidates on empty
             # performance estimates, nor modify a real training campaign.

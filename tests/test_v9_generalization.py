@@ -250,3 +250,32 @@ def test_heldout_profiles_are_distinct_and_preserve_safety_contract():
         assert p["physics"]["max_load_factor_g"] == 2.5
     strong = next(p for p in profiles if p["task"]["name"] == "holdout_random_stronger")
     assert strong["task"]["max_accel"] == 2
+
+ 
+def test_v9_summary_csv_separates_controllers_and_variants(tmp_path):
+    from scripts.summarize_v9_campaign import to_csv
+    sample = {
+        "stages": {"pilot": {"summary_by_variant": {
+            "test_A": {"in_distribution": {
+                "02_low_tail": {
+                    "ppo_v9": {
+                        "successes": 8, "episodes": 10, "success_rate": .8,
+                        "wilson_95": [.49, .94],
+                        "per_seed_success_rates": [.8], "failures": {"timeout": 2}
+                    },
+                    "pn_ctbr": {
+                        "successes": 10, "episodes": 10, "success_rate": 1.,
+                        "wilson_95": [.72, 1.], "per_seed_success_rates": [1.],
+                        "failures": {}
+                    },
+                }
+            }, "heldout": {}}
+        }}}
+    }
+    path = to_csv(sample, tmp_path / "results.csv")
+    import csv
+    records = list(csv.DictReader(path.open()))
+    assert len(records) == 2
+    ppo = next(row for row in records if row["method"] == "ppo_v9")
+    assert float(ppo["delta_success_vs_pn"]) == pytest.approx(-.2)
+    assert ppo["distribution"] == "in_distribution"

@@ -142,3 +142,18 @@ objective. PPO still performs its regular joint-task value updates.
 recovery. Numbered archival `update_XXXXX.pt` files are saved every 20 PPO
 updates to reduce multi-run disk pressure. Never delete the latest or selected
 best checkpoint while the campaign is active.
+
+## Automatic comparison tables
+
+At each finished stage, the launcher writes
+`comparison_summary.csv` in the campaign root. Rows are split by
+stage, variant, distribution, task and controller; metrics include
+successful safe entries and Wilson intervals, success-conditioned entry
+time/relative speed, unsafe-entry frequency, failures and difference
+in success rate versus PN-CTBR. Different trained variants are never
+pooled into a fictitious shared policy. To regenerate after a partial
+run:
+
+```bash
+python scripts/summarize_v9_campaign.py runs/v9_unattended/campaign_results.json
+```
