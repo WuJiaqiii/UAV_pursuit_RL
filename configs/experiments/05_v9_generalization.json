@@ -1,0 +1,166 @@
+{
+  "schema": "pursuit-v9-generalization-campaign-v1",
+  "description": "Unattended multi-task PPO, frozen policy retention, multi-task DAgger and matched PN/PD comparisons.",
+  "primary": "02_low_tail",
+  "profiles": {
+    "01_static": "configs/first_entry_highspeed/01_static.json",
+    "02_low_tail": "configs/first_entry_highspeed/02_low_tail.json",
+    "03_low_head_on": "configs/first_entry_highspeed/03_low_head_on.json",
+    "04_low_random": "configs/first_entry_highspeed/04_low_random.json"
+  },
+  "num_envs": 64,
+  "teacher_method": "pd",
+  "evaluation_seed_offset": 279000,
+  "training_defaults": {
+    "bc_segment_seconds": 4,
+    "bc_samples": 40000,
+    "bc_stride": 2,
+    "bc_updates": 0,
+    "bc_rounds": 1,
+    "initialization_success_floor": 0,
+    "rollout_steps": 512,
+    "batch_size": 2048,
+    "epochs": 3,
+    "validation_seed": 78000,
+    "mc_calibration_every_updates": 16,
+    "mc_calibration_updates": 16,
+    "prediction_updates_enabled": false,
+    "minimum_success": 0.95
+  },
+  "stages": {
+    "pilot": {
+      "seeds": [
+        42,
+        43
+      ],
+      "variants": [
+        "joint_ppo",
+        "joint_distill_005",
+        "joint_distill_01",
+        "joint_dagger2_distill",
+        "joint_dagger4_distill"
+      ],
+      "final_eval_episodes": 64,
+      "training": {
+        "physics_steps": 8000000,
+        "validation_every": 2000000,
+        "validation_episodes": 24,
+        "critic_updates": 400,
+        "mc_episodes": 8
+      },
+      "top_k": 3
+    },
+    "full": {
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "variants": [
+        "joint_distill_005",
+        "joint_dagger2_distill",
+        "joint_dagger4_distill"
+      ],
+      "final_eval_episodes": 128,
+      "training": {
+        "physics_steps": 40000000,
+        "validation_every": 5000000,
+        "validation_episodes": 32,
+        "critic_updates": 600,
+        "mc_episodes": 16
+      },
+      "top_k": 2,
+      "minimum_previous_worst": 0.15
+    },
+    "confirmation": {
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ],
+      "variants": [
+        "joint_dagger2_distill",
+        "joint_dagger4_distill"
+      ],
+      "final_eval_episodes": 256,
+      "training": {
+        "physics_steps": 80000000,
+        "validation_every": 8000000,
+        "validation_episodes": 64,
+        "critic_updates": 800,
+        "mc_episodes": 24
+      },
+      "top_k": 1,
+      "minimum_previous_worst": 0.35
+    }
+  },
+  "variants": [
+    {
+      "name": "joint_ppo",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0,
+      "bc_updates": 0,
+      "bc_rounds": 1,
+      "multitask_bc": false
+    },
+    {
+      "name": "joint_distill_005",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 0,
+      "bc_rounds": 1,
+      "multitask_bc": false
+    },
+    {
+      "name": "joint_distill_01",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.1,
+      "bc_updates": 0,
+      "bc_rounds": 1,
+      "multitask_bc": false
+    },
+    {
+      "name": "joint_dagger2_distill",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 500,
+      "bc_rounds": 2,
+      "multitask_bc": true
+    },
+    {
+      "name": "joint_dagger4_distill",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 1000,
+      "bc_rounds": 4,
+      "multitask_bc": true
+    }
+  ]
+}
