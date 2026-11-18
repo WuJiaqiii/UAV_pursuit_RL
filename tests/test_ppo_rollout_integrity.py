@@ -254,3 +254,84 @@ def test_dagger_rounds_retain_prior_round_labels(tmp_path, monkeypatch):
     assert fit_sizes == [(2, 1), (4, 1)]
     assert progress["bc_rounds_completed"] == 2
     assert progress["bc_updates"] == 2
+
+def test_long_horizon_parameter_matrix_is_well_formed():
+    import json
+    from pathlib import Path
+    from scripts.run_reward_ablation import build_configs
+    path = Path("configs/experiments/04_low_tail_long_optimization.json")
+    plan = json.loads(path.read_text())
+    variants = {variant["name"]: variant for variant in plan["variants"]}
+    assert len(variants) == 15
+    assert len(plan["stages"]) == 3
+    assert plan["stages"]["extended"]["training"]["physics_steps"] == 80_000_000
+    assert len(plan["stages"]["extended"]["seeds"]) == 5
+    assert plan["default_extended_variants"] == [
+        "reference_p6_bc2", "p6_bc3_750"
+    ]
+    for stage in ("screening", "full", "extended"):
+        for variant in plan["variants"]:
+            c, replay = build_configs(plan, variant, stage, 42, "cpu")
+            assert c["task"]["radius"] == 0.5
+            assert c["task"]["entry_relative_speed_max_mps"] == 15
+            assert c["physics"]["max_load_factor_g"] == 2.5
+            assert c["physics"]["max_speed"] == 60
+            assert c["training"]["replay_recent_fraction"] == pytest.approx(.2)
+            assert c["training"]["replay_anchor_fraction"] == 0
+            assert c["reward"]["completion_bonus"] == 10
+            assert c["reward"]["failure"] == 10
+            assert replay["reward"] == c["reward"]
+            assert replay["training"]["discount_time_s"] == c["training"]["discount_time_s"]
+            assert replay["training"]["advantage_time_s"] == c["training"]["advantage_time_s"]
+            assert c["training"]["bc_rounds"] <= max(1, c["training"]["bc_updates"])
+    baseline, _ = build_configs(plan, variants["reference_p6_bc2"], "screening", 42, "cpu")
+    actor, _ = build_configs(plan, variants["p6_actor_lr_1e5"], "screening", 42, "cpu")
+    gae, replay = build_configs(plan, variants["p6_gae_5s"], "screening", 42, "cpu")
+    assert actor["training"]["actor_lr"] == pytest.approx(1e-5)
+    assert baseline["training"]["actor_lr"] == pytest.approx(3e-5)
+    assert gae["training"]["advantage_time_s"] == pytest.approx(5)
+    assert replay["training"]["advantage_time_s"] == pytest.approx(5)
+
+
+def test_multi_parameter_variants_cannot_change_unsafe_flight_contract():
+    import copy
+    import json
+    from pathlib import Path
+    from scripts.run_reward_ablation import build_configs
+    plan = json.loads(
+        Path("configs/experiments/04_low_tail_long_optimization.json").read_text()
+    )
+    variant = {"name": "bad_hard_speed", "training": {"max_load_factor_g": 999}}
+    with pytest.raises(ValueError, match="Unsupported variant training"):
+        build_configs(plan, variant, "screening", 42, "cpu")
+    variant = {"name": "bad_reward", "reward": {"unknown_key": 1}}
+    with pytest.raises(ValueError, match="Unknown reward"):
+        build_configs(plan, variant, "screening", 42, "cpu")
+
+
+def test_long_horizon_dry_run_is_reproducible(tmp_path):
+    from pursuit_rl.ctbr.checkpoint import save
+    from scripts.run_reward_ablation import main
+    config = _quick_config()
+    parent = tmp_path / "parent.pt"
+    save(parent, new_model(config, optimizers=False),
+         config, {"physics_steps": 0}, "dry_run_parent")
+    plan = "configs/experiments/04_low_tail_long_optimization.json"
+    out = tmp_path / "long"
+    result = main([
+        "--plan", plan,
+        "--parent-checkpoint", str(parent),
+        "--out", str(out),
+        "--stage", "extended",
+        "--variants", "reference_p6_bc2",
+        "--seeds", "42",
+        "--dry-run", "--device", "cpu",
+    ])
+    assert len(result["results"]) == 1
+    run = result["results"][0]
+    assert run["status"] == "dry_run"
+    assert run["ppo_physics_steps_budget"] == 80_000_000
+    assert run["task_mix"]["current_envs"] == 51
+    assert run["task_mix"]["replay_envs"] == 13
+    assert (out / "ablation_matrix.json").exists()
+    assert not (out / "reference_p6_bc2" / "seed_42").exists()

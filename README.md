@@ -91,3 +91,17 @@ available for historical reproduction.
 - `configs/first_entry_highspeed/`: 13 stage profiles and ordered plan
 - `tests/`: environment, safety, training, curriculum and checkpoint regressions
 - `scripts/plot_entry_trace.py`: trace visualization
+
+## Long-horizon multi-parameter experiments
+
+After verifying numerical integrity and completing the 4M/20M reward
+screening, use the separate
+[long-horizon plan](docs/LONG_HORIZON_MULTIFACTOR.md):
+`configs/experiments/04_low_tail_long_optimization.json`.
+It varies reward weights, DAgger rounds, Actor/Critic learning rates and
+GAE advantage horizon, with matched 8M / 40M / 80M physics-step phases.
+It reports independent low-head-on and low-random stress evaluations;
+these are not included in the current-task promotion score.
+
+The new plan is a proposed research campaign; the long GPU experiments
+are not included in automated CI and have not been executed here.

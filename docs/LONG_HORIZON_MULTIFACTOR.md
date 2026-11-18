@@ -74,46 +74,46 @@ git checkout experiment/v8-long-horizon-multifactor
 git pull --ff-only
 pip install -e ".[dev]"
 pytest -q
-python main.py evaluate --reference --reference-method pd \\
-  --config configs/first_entry_highspeed/02_low_tail.json \\
+python main.py evaluate --reference --reference-method pd \
+  --config configs/first_entry_highspeed/02_low_tail.json \
   --episodes 128 --seed 78042 --out runs/v8long/pd_reference.json --device cuda
 ```
 
 Dry-run the long plan (does not train):
 
 ```bash
-python scripts/run_reward_ablation.py \\
-  --plan configs/experiments/04_low_tail_long_optimization.json \\
-  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \\
+python scripts/run_reward_ablation.py \
+  --plan configs/experiments/04_low_tail_long_optimization.json \
+  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
   --out runs/v8long/dry_run --stage screening --device cpu --dry-run
 ```
 
 Run the limited screening on two matched seeds:
 
 ```bash
-python scripts/run_reward_ablation.py \\
-  --plan configs/experiments/04_low_tail_long_optimization.json \\
-  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \\
+python scripts/run_reward_ablation.py \
+  --plan configs/experiments/04_low_tail_long_optimization.json \
+  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
   --out runs/v8long/screening --stage screening --device cuda
 ```
 
 After screening, select Full candidates and run:
 
 ```bash
-python scripts/run_reward_ablation.py \\
-  --plan configs/experiments/04_low_tail_long_optimization.json \\
-  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \\
-  --out runs/v8long/full --stage full --device cuda \\
+python scripts/run_reward_ablation.py \
+  --plan configs/experiments/04_low_tail_long_optimization.json \
+  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
+  --out runs/v8long/full --stage full --device cuda \
   --variants reference_p6_bc2 p6_bc3_750 p6_no_braking p6_actor_lr_1e5 p12_bc2
 ```
 
 Finally confirm the top two with 80M steps each × five seeds:
 
 ```bash
-python scripts/run_reward_ablation.py \\
-  --plan configs/experiments/04_low_tail_long_optimization.json \\
-  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \\
-  --out runs/v8long/extended --stage extended --device cuda \\
+python scripts/run_reward_ablation.py \
+  --plan configs/experiments/04_low_tail_long_optimization.json \
+  --parent-checkpoint runs/v8_curriculum/01_static/seed_42/checkpoints/best_feasible.pt \
+  --out runs/v8long/extended --stage extended --device cuda \
   --variants reference_p6_bc2 p6_bc3_750
 ```
 
