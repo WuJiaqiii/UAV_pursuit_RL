@@ -147,3 +147,22 @@ seed's best success rate as the final result.
 **Recommended go/no-go:** If short screening exhibits zero current-task
 safe entries across both seeds for every candidate, prioritize improving
 DAgger terminal state coverage before spending 600M+ physics steps on Full.
+
+## Aggregating completed results
+
+After each phase completes, summarize only **independent final evaluations**
+rather than the mixture's training success count:
+
+```bash
+python scripts/summarize_long_experiments.py \
+  runs/v8long/screening/ablation_matrix.json
+python scripts/summarize_long_experiments.py \
+  runs/v8long/full/ablation_matrix.json
+```
+
+This creates `summary.json` and `summary.csv` next to the matrix. A
+failed/incomplete or BC-gated run is counted explicitly but never included
+in the current-task success-rate denominator. The 95% Wilson interval
+describes pooled episode-level uncertainty; between-seed variability must
+still be reported separately. Cross-geometry results remain separate
+diagnostics; they are not counted as low-tail in-distribution successes.

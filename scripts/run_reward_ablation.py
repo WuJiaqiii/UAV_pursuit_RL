@@ -375,6 +375,8 @@ def main(argv=None):
                         final_reports.append(
                             {
                                 "seed": eval_seed,
+                                "episodes": report["episodes"],
+                                "successes": report["successes"],
                                 "success_rate": report["success_rate"],
                                 "unsafe_entry_rate": report["unsafe_entry_rate"],
                                 "mean_minimum_distance_m": report["mean_minimum_distance_m"],
@@ -406,6 +408,8 @@ def main(argv=None):
                             {
                                 "seed": eval_seed,
                                 "task": replay["task"]["name"],
+                                "episodes": report["episodes"],
+                                "successes": report["successes"],
                                 "success_rate": report["success_rate"],
                                 "unsafe_entry_rate": report["unsafe_entry_rate"],
                                 "mean_minimum_distance_m": report["mean_minimum_distance_m"],
@@ -442,6 +446,8 @@ def main(argv=None):
                             cross_evaluations.append({
                                 "profile": cross_profile,
                                 "seed": cross_seed,
+                                "episodes": cross_report["episodes"],
+                                "successes": cross_report["successes"],
                                 "success_rate": cross_report["success_rate"],
                                 "unsafe_entry_rate": cross_report["unsafe_entry_rate"],
                                 "mean_minimum_distance_m": cross_report["mean_minimum_distance_m"],
