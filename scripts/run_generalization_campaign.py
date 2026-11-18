@@ -86,6 +86,21 @@ def model_configs(parent_config, plan, variant, stage, seed, device):
     return primary, others, list(configurations.values())
 
 
+def heldout_configs(parent_config, plan, seed, device):
+    """Never used for training or promotion; independent distribution-shift probes."""
+    profiles = []
+    for name, path in plan.get("heldout_profiles", {}).items():
+        source = load_profile(path, device=device, seed=seed)
+        config = copy.deepcopy(parent_config)
+        config["task"] = copy.deepcopy(source["task"])
+        config["task"]["name"] = name
+        config["device"] = device
+        config["seed"] = seed
+        config["num_envs"] = plan["num_envs"]
+        profiles.append(validate(config))
+    return profiles
+
+
 def evaluate_methods(model, parent_model, task_profiles, episodes, seed, dest):
     """Matched initial states and 4-CTBR physics across learned/geometric methods."""
     dest = Path(dest)
@@ -352,10 +367,26 @@ def run(argv=None):
                                 seed + plan["evaluation_seed_offset"],
                                 run_dir / "comparison",
                             )
+                            if stage in ("full", "confirmation"):
+                                holdouts = heldout_configs(
+                                    config, plan, seed, args.device
+                                )
+                                ood = evaluate_methods(
+                                    trained, parent, holdouts,
+                                    plan["stages"][stage].get(
+                                        "ood_eval_episodes",
+                                        plan["stages"][stage]["final_eval_episodes"] // 2,
+                                    ),
+                                    seed + plan["evaluation_seed_offset"] + 500000,
+                                    run_dir / "ood_comparison",
+                                ) if holdouts else {}
+                            else:
+                                ood = {}
                             row.update(
                                 status="completed",
                                 checkpoint=str(checkpoint),
                                 evaluations=reports,
+                                heldout_evaluations=ood,
                                 worst_task_success_rate=min(
                                     r["ppo_v9"]["success_rate"]
                                     for r in reports.values()
@@ -391,10 +422,17 @@ def run(argv=None):
         # Never pool episodes across different candidate policies; statistical
         # summaries are per variant and keep independent seeds separate.
         stage_result["summary_by_variant"] = {
-            name: aggregate([
-                row["evaluations"] for row in rows
-                if row.get("status") == "completed"
-            ])
+            name: dict(
+                in_distribution=aggregate([
+                    row["evaluations"] for row in rows
+                    if row.get("status") == "completed"
+                ]),
+                heldout=aggregate([
+                    row["heldout_evaluations"] for row in rows
+                    if row.get("status") == "completed"
+                    and row.get("heldout_evaluations")
+                ]),
+            )
             for name, rows in stage_result["variants"].items()
         }
         write_json(progress_path, results)

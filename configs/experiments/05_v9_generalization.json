@@ -70,7 +70,8 @@
         "mc_episodes": 16
       },
       "top_k": 2,
-      "minimum_previous_worst": 0.15
+      "minimum_previous_worst": 0.15,
+      "ood_eval_episodes": 64
     },
     "confirmation": {
       "seeds": [
@@ -93,7 +94,8 @@
         "mc_episodes": 24
       },
       "top_k": 1,
-      "minimum_previous_worst": 0.35
+      "minimum_previous_worst": 0.35,
+      "ood_eval_episodes": 128
     }
   },
   "variants": [
@@ -162,5 +164,10 @@
       "bc_rounds": 4,
       "multitask_bc": true
     }
-  ]
+  ],
+  "heldout_profiles": {
+    "holdout_tail_wider": "configs/experiments/holdout_tail_wider.json",
+    "holdout_head_faster": "configs/experiments/holdout_head_faster.json",
+    "holdout_random_stronger": "configs/experiments/holdout_random_stronger.json"
+  }
 }

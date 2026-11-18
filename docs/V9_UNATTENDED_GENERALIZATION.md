@@ -116,3 +116,16 @@ selection. CUDA OOM is recorded and re-raised. Training includes periodic
 checkpointing, code fingerprints, reward consistency checks and fresh
 Critic calibration on transferred model. The pilot/full/confirmation
 long GPU campaigns have **not** been run in this development session.
+
+## Held-out distribution-shift evaluation
+
+Full and Confirmation also evaluate three **never-trained** profile distributions:
+`holdout_tail_wider` (5–9 m/s and 10–25 m separation),
+`holdout_head_faster` (6–10 m/s and 20–40 m separation), and
+`holdout_random_stronger` (6–10 m/s target, 2 m/s² maneuvers and
+12% randomization factor). Each is run against PPO-v8/v9, PN-CTBR,
+PD-CTBR and PN–PD-CTBR with checked identical initial-state digests.
+They are stored under `ood_comparison/` and reported separately as
+`summary_by_variant.<variant>.heldout`. They are **not** used for
+checkpoint selection or phase promotion. In-distribution validation
+scores on the four training task distributions remain separate.

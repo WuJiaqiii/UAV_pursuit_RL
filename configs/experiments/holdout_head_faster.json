@@ -1,0 +1,23 @@
+{
+  "task": {
+    "name": "holdout_head_faster",
+    "kind": "cruise",
+    "encounter": "head_on",
+    "initial_pursuer_heading": "opposite",
+    "trimmed_initialization": false,
+    "speed": [
+      6,
+      10
+    ],
+    "distance": [
+      20,
+      40
+    ],
+    "initial_pursuer_speed": [
+      0,
+      5
+    ],
+    "duration": 14,
+    "randomization": 0.05
+  }
+}

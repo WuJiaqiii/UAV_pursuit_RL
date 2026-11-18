@@ -1,0 +1,23 @@
+{
+  "task": {
+    "name": "holdout_tail_wider",
+    "kind": "cruise",
+    "encounter": "tail",
+    "initial_pursuer_heading": "same",
+    "trimmed_initialization": true,
+    "speed": [
+      5,
+      9
+    ],
+    "distance": [
+      10,
+      25
+    ],
+    "initial_pursuer_speed": [
+      2,
+      6
+    ],
+    "duration": 14,
+    "randomization": 0.05
+  }
+}

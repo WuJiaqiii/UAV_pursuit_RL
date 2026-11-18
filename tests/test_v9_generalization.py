@@ -235,3 +235,18 @@ def test_unattended_pipeline_full_smoke_and_resume(tmp_path):
     next_result = run(argv + ["--resume-existing"])
     assert next_result["stages"]["pilot"]["variants"]["joint_ppo"][0]["status"] == "completed"
     assert ckpt.read_bytes() == checkpoint_bytes
+
+ 
+def test_heldout_profiles_are_distinct_and_preserve_safety_contract():
+    from scripts.run_generalization_campaign import heldout_configs
+    plan = json.loads(Path("configs/experiments/05_v9_generalization.json").read_text())
+    c = quick()
+    profiles = heldout_configs(c, plan, 42, "cpu")
+    assert len(profiles) == 3
+    assert len({p["task"]["name"] for p in profiles}) == 3
+    for p in profiles:
+        assert p["task"]["entry_relative_speed_max_mps"] == 15
+        assert p["task"]["radius"] == .5
+        assert p["physics"]["max_load_factor_g"] == 2.5
+    strong = next(p for p in profiles if p["task"]["name"] == "holdout_random_stronger")
+    assert strong["task"]["max_accel"] == 2

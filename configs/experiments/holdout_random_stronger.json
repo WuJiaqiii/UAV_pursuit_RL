@@ -1,0 +1,24 @@
+{
+  "task": {
+    "name": "holdout_random_stronger",
+    "kind": "random",
+    "encounter": "random",
+    "initial_pursuer_heading": "random",
+    "trimmed_initialization": false,
+    "speed": [
+      6,
+      10
+    ],
+    "max_accel": 2,
+    "distance": [
+      15,
+      35
+    ],
+    "initial_pursuer_speed": [
+      0,
+      7
+    ],
+    "duration": 15,
+    "randomization": 0.12
+  }
+}
