@@ -26,7 +26,9 @@ def wilson(successes, episodes, z=1.959963984540054):
             p * (1 - p) / episodes + z * z / (4 * episodes * episodes)
         ) / denom
     )
-    return [max(0.0, center - half), min(1.0, center + half)]
+    lower = 0.0 if successes == 0 else max(0.0, center - half)
+    upper = 1.0 if successes == episodes else min(1.0, center + half)
+    return [lower, upper]
 
 
 def aggregate_evaluations(reports):
