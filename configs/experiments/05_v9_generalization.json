@@ -22,10 +22,11 @@
     "batch_size": 2048,
     "epochs": 3,
     "validation_seed": 78000,
-    "mc_calibration_every_updates": 16,
+    "mc_calibration_every_updates": 0,
     "mc_calibration_updates": 16,
     "prediction_updates_enabled": false,
-    "minimum_success": 0.95
+    "minimum_success": 0.95,
+    "save_every_updates": 20
   },
   "stages": {
     "pilot": {

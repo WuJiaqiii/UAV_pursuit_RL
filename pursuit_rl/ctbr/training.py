@@ -493,18 +493,46 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     )
                     write_json(root / "gate_failure.json", details)
                     raise ExperimentGateError(details)
-        calibration, data = evaluate(
-            model,
-            c,
-            tr["mc_episodes"],
-            810000 + c["seed"],
-            stochastic=True,
-            collect_mc=True,
-        )
-        progress["mc_physics_steps"] += sum(
-            round(e["time"] / c["physics"]["dt"])
-            for e in calibration["episodes_detail"]
-        )
+        if validation_profiles:
+            # Match the initial MC critic regression to the *joint* PPO task
+            # distribution, rather than fitting only on the tail task before
+            # starting a four-task rollout.
+            gathered = []
+            initial_calibrations = {}
+            per_task = max(2, math.ceil(tr["mc_episodes"] / len(validation_profiles)))
+            for profile_idx, profile in enumerate(validation_profiles):
+                report, pair = evaluate(
+                    model, profile, per_task,
+                    810000 + c["seed"] + 10007 * profile_idx,
+                    stochastic=True, collect_mc=True,
+                )
+                name = profile["task"]["name"]
+                initial_calibrations[name] = dict(
+                    critic_mc_rmse=report["critic_mc_rmse"],
+                    success_rate=report["success_rate"],
+                )
+                if name == c["task"]["name"]:
+                    calibration = report
+                gathered.append(pair)
+                progress["mc_physics_steps"] += sum(
+                    round(ep["time"] / c["physics"]["dt"])
+                    for ep in report["episodes_detail"]
+                )
+            data = (
+                torch.cat([item[0] for item in gathered]),
+                torch.cat([item[1] for item in gathered]),
+            )
+            emit(root, "joint_critic_warmup_samples",
+                 episodes_per_task=per_task, tasks=initial_calibrations)
+        else:
+            calibration, data = evaluate(
+                model, c, tr["mc_episodes"], 810000 + c["seed"],
+                stochastic=True, collect_mc=True,
+            )
+            progress["mc_physics_steps"] += sum(
+                round(e["time"] / c["physics"]["dt"])
+                for e in calibration["episodes_detail"]
+            )
         fit = fit_critic(model, data, tr["critic_updates"], tr["batch_size"])
         if tr["critic_updates"] > 0:
             model.critic_policy_match = True

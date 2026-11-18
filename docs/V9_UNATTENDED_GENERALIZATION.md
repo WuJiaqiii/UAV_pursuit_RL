@@ -129,3 +129,16 @@ They are stored under `ood_comparison/` and reported separately as
 `summary_by_variant.<variant>.heldout`. They are **not** used for
 checkpoint selection or phase promotion. In-distribution validation
 scores on the four training task distributions remain separate.
+
+## Critic and checkpoint-storage behavior
+
+Before multi-task PPO, the transferred Critic is recalibrated using Monte Carlo
+returns collected from **all four** training scenarios rather than only the
+primary tail scenario. Periodic tail-only MC corrections are disabled in v9,
+since they would skew the shared Critic away from the mixed training
+objective. PPO still performs its regular joint-task value updates.
+
+`latest.pt` is saved at every completed PPO rollout for device-interruption
+recovery. Numbered archival `update_XXXXX.pt` files are saved every 20 PPO
+updates to reduce multi-run disk pressure. Never delete the latest or selected
+best checkpoint while the campaign is active.
