@@ -270,7 +270,12 @@ def run(argv=None):
                     "static_teacher_sha256", "source_fingerprint"):
             if old[key] != manifest[key]:
                 raise ValueError(f"Campaign changed {key}; resume refused")
-    elif root.exists() and any(root.iterdir()):
+    elif root.exists() and any(
+        item.name not in ("campaign.log", "campaign.pid") for item in root.iterdir()
+    ):
+        # The nohup launcher creates only its log and PID in the campaign
+        # directory before invoking Python. Accept exactly these two benign
+        # bookkeeping files, but refuse arbitrary previous experiment data.
         raise FileExistsError("Campaign root is nonempty without manifest")
     else:
         root.mkdir(parents=True, exist_ok=True)

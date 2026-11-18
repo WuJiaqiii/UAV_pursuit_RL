@@ -215,6 +215,11 @@ def test_unattended_pipeline_full_smoke_and_resume(tmp_path):
         "tiny_parent",
     )
     out = tmp_path / "real_campaign"
+    out.mkdir()
+    # Simulates launch_v9.sh, which starts nohup with its log and PID
+    # under the output directory before the Python campaign checks it.
+    (out / "campaign.log").write_text("")
+    (out / "campaign.pid").write_text("999999")
     argv = [
         "--plan", str(plan_path),
         "--parent-checkpoint", str(parent_path),
