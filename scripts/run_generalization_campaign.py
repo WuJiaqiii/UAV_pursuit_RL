@@ -21,6 +21,16 @@ from pursuit_rl.ctbr.config import load as load_profile, validate, fingerprint
 from pursuit_rl.ctbr.evaluation import evaluate
 from pursuit_rl.ctbr.training import train
 
+# Both invocations are supported:
+#   python scripts/run_generalization_campaign.py ...
+#   python -m scripts.run_generalization_campaign ...
+# A directly executed script has no "scripts" package in sys.path, whereas
+# a module invocation resolves a relative import from that package.
+if __package__:
+    from .summarize_v9_campaign import to_csv
+else:
+    from summarize_v9_campaign import to_csv
+
 
 def checksum(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -484,7 +494,6 @@ def run(argv=None):
             for name, rows in stage_result["variants"].items()
         }
         write_json(progress_path, results)
-        from scripts.summarize_v9_campaign import to_csv
         to_csv(results, root / "comparison_summary.csv")
         if args.dry_run:
             # Dry runs should not accidentally promote candidates on empty

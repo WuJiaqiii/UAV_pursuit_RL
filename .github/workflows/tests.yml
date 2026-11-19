@@ -17,3 +17,9 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python -m compileall -q pursuit_rl main.py tests
       - run: pytest -q
+      # Exercise direct-script and module entrypoints (different sys.path).
+      # The campaign previously failed at its final CSV step only under
+      # direct execution, which ordinary module-import tests did not catch.
+      - run: python scripts/run_generalization_campaign.py --help
+      - run: python -m scripts.run_generalization_campaign --help
+      - run: python scripts/summarize_v9_campaign.py --help
