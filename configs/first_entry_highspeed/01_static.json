@@ -32,7 +32,7 @@
     "physics_steps": 12000000
   },
   "reward": {
-    "progress": 0.3,
+    "progress": 6,
     "completion_bonus": 10,
     "failure": 10,
     "braking": 0.5,
