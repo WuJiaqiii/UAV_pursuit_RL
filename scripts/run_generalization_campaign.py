@@ -74,11 +74,13 @@ def model_configs(parent_config, plan, variant, stage, seed, device):
         config["training"]["replay_anchor_fraction"] = 0.0
         config["training"]["teacher_method"] = plan["teacher_method"]
         for key, value in variant.get("training", {}).items():
-            if key not in ("actor_lr", "critic_lr", "advantage_time_s"):
+            if key not in ("actor_lr", "critic_lr", "advantage_time_s", "aux_pd_coef"):
                 raise ValueError(f"Disallowed generalization training override: {key}")
             config["training"][key] = value
         for key, value in variant.get("reward", {}).items():
-            if key not in ("progress", "braking", "entry_velocity"):
+            if key not in ("progress", "braking", "entry_velocity",
+                           "tilt_guard", "tilt_guard_start_deg",
+                           "tilt_guard_lookahead_s"):
                 raise ValueError(f"Disallowed generalization reward override: {key}")
             config["reward"][key] = value
         configurations[name] = validate(config)
@@ -121,6 +123,8 @@ def evaluate_methods(model, parent_model, task_profiles, episodes, seed, dest):
         "ppo_v8": (parent_model, None),
         "pn_ctbr": (None, "pn"),
         "pd_ctbr": (None, "pd"),
+        "pd_observed": (None, "pd_observed"),
+        "pd_observed_smoothed": (None, "pd_observed_smoothed"),
         "pn_pd_ctbr": (None, "pn_hybrid"),
     }
     for task_index, config in enumerate(task_profiles):
