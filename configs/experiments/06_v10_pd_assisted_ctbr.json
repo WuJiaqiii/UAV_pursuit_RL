@@ -1,0 +1,147 @@
+{
+  "schema": "pursuit-v9-generalization-campaign-v1",
+  "description": "v10 matched direct-CTBR PPO ablation: full-state executed-action DAgger, soft predictive posture guard, observable PD auxiliary supervision and matched pure-PD baselines",
+  "primary": "02_low_tail",
+  "profiles": {
+    "01_static": "configs/first_entry_highspeed/01_static.json",
+    "02_low_tail": "configs/first_entry_highspeed/02_low_tail.json",
+    "03_low_head_on": "configs/first_entry_highspeed/03_low_head_on.json",
+    "04_low_random": "configs/first_entry_highspeed/04_low_random.json"
+  },
+  "num_envs": 64,
+  "teacher_method": "pd_observed",
+  "evaluation_seed_offset": 279000,
+  "training_defaults": {
+    "bc_segment_seconds": 4,
+    "bc_samples": 40000,
+    "bc_stride": 2,
+    "bc_updates": 0,
+    "bc_rounds": 1,
+    "initialization_success_floor": 0,
+    "rollout_steps": 512,
+    "batch_size": 2048,
+    "epochs": 3,
+    "validation_seed": 78000,
+    "mc_calibration_every_updates": 0,
+    "mc_calibration_updates": 16,
+    "prediction_updates_enabled": false,
+    "minimum_success": 0.95,
+    "save_every_updates": 20
+  },
+  "stages": {
+    "pilot": {
+      "seeds": [
+        42,
+        43
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 64,
+      "training": {
+        "physics_steps": 8000000,
+        "validation_every": 2000000,
+        "validation_episodes": 24,
+        "critic_updates": 400,
+        "mc_episodes": 8
+      },
+      "top_k": 2
+    },
+    "full": {
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 128,
+      "training": {
+        "physics_steps": 40000000,
+        "validation_every": 5000000,
+        "validation_episodes": 32,
+        "critic_updates": 600,
+        "mc_episodes": 16
+      },
+      "top_k": 2,
+      "minimum_previous_worst": 0,
+      "ood_eval_episodes": 64
+    },
+    "confirmation": {
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 256,
+      "training": {
+        "physics_steps": 80000000,
+        "validation_every": 8000000,
+        "validation_episodes": 64,
+        "critic_updates": 800,
+        "mc_episodes": 24
+      },
+      "top_k": 2,
+      "minimum_previous_worst": 0,
+      "ood_eval_episodes": 128
+    }
+  },
+  "variants": [
+    {
+      "name": "dagger4_guard_no_aux",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 1000,
+      "bc_rounds": 4,
+      "multitask_bc": true,
+      "reward": {
+        "tilt_guard": 3,
+        "tilt_guard_start_deg": 55,
+        "tilt_guard_lookahead_s": 0.12
+      },
+      "training": {
+        "aux_pd_coef": 0
+      }
+    },
+    {
+      "name": "dagger4_guard_pd_aux",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 1000,
+      "bc_rounds": 4,
+      "multitask_bc": true,
+      "reward": {
+        "tilt_guard": 3,
+        "tilt_guard_start_deg": 55,
+        "tilt_guard_lookahead_s": 0.12
+      },
+      "training": {
+        "aux_pd_coef": 0.02
+      }
+    }
+  ],
+  "heldout_profiles": {
+    "holdout_tail_wider": "configs/experiments/holdout_tail_wider.json",
+    "holdout_head_faster": "configs/experiments/holdout_head_faster.json",
+    "holdout_random_stronger": "configs/experiments/holdout_random_stronger.json"
+  }
+}
