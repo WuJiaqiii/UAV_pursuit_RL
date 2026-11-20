@@ -168,3 +168,57 @@ def test_matched_pd_auxiliary_experiment_plan():
         )
         assert primary["reward"]["tilt_guard"] == 3.0
         assert len(other) == 3 and len(all_profiles) == 4
+
+
+
+def test_dagger_lstm_feature_preprocessing_is_batched(monkeypatch):
+    """Reproduce the CUDA-OOM path: cumulative DAgger datasets feed a frozen LSTM.
+
+    A single unchunked forward for n samples can demand >24 GiB of cuDNN
+    workspace. Verify that the feature extractor sees <=256 rows per forward.
+    """
+    c = config()
+    c["prediction"]["enabled"] = True
+    model = new_model(validate(c))
+    n = 605
+    obs = torch.randn(n, model.obs_dim) * 0.02
+    actions = torch.tanh(torch.randn(n, 4) * 0.2)
+    calls = []
+    original = model.actor_features
+
+    def monitored(rows):
+        calls.append(int(rows.shape[0]))
+        assert len(rows) <= 256
+        return original(rows)
+
+    monkeypatch.setattr(model, "actor_features", monitored)
+    loss = fit_actor(model, (obs, actions), updates=2, batch_size=1024)
+    assert calls == [256, 256, 93]
+    assert math.isfinite(loss)
+
+
+def test_24gb_campaign_preset_is_matched_and_includes_speed_stress():
+    from scripts.run_generalization_campaign import model_configs
+
+    root = Path("configs/experiments")
+    regular = json.loads((root / "06_v10_pd_assisted_ctbr.json").read_text())
+    lite = json.loads((root / "07_v10_24gb.json").read_text())
+    assert lite["num_envs"] == 32
+    assert lite["training_defaults"]["rollout_steps"] == 256
+    assert lite["training_defaults"]["batch_size"] == 512
+    assert lite["training_defaults"]["bc_samples"] == 10_000
+    assert len(lite["variants"]) == 2
+    assert lite["profiles"] == regular["profiles"]
+    assert lite["heldout_profiles"] == regular["heldout_profiles"]
+    assert lite["stress_profiles"] == regular["stress_profiles"]
+    assert lite["stress_groups"] == regular["stress_groups"]
+    assert lite["teacher_method"] == regular["teacher_method"]
+    for arm in lite["variants"]:
+        assert arm["bc_updates"] == 400
+        assert arm["bc_rounds"] == 4
+        primary, other, tasks = model_configs(config(), lite, arm, "pilot", 42, "cpu")
+        assert primary["num_envs"] == 32
+        assert primary["training"]["batch_size"] == 512
+        assert primary["training"]["physics_steps"] == 4_000_000
+        assert len(other) == 3 and len(tasks) == 4
+    assert [x["training"]["aux_pd_coef"] for x in lite["variants"]] == [0, 0.02]
