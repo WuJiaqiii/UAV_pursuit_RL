@@ -95,8 +95,17 @@ def fit_actor(model, data, updates, batch_size):
     """
     observations, y = data
     first = model.actor[0]
+    # DAgger aggregates many thousands of full trajectory-history samples.
+    # Passing every sample to an LSTM predictor in one CUDA forward requires
+    # an enormous temporary cuDNN workspace (can exceed 24 GB even when the
+    # retained feature tensor itself is small). Precompute *frozen* predictor
+    # features in bounded chunks, identical to the PPO update preprocessing.
+    feature_batch = max(1, min(int(batch_size), 256))
     with torch.no_grad():
-        x = model.bound_actor_input(model.actor_features(observations)).detach()
+        x = torch.cat([
+            model.bound_actor_input(model.actor_features(part)).detach()
+            for part in observations.split(feature_batch)
+        ], dim=0)
     if x.shape[-1] != first.in_features:
         raise ValueError("Imitation features do not match Actor input")
     center = x.mean(0)
