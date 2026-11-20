@@ -174,7 +174,8 @@ def test_matched_reference_controllers_report_same_initial_digest(tmp_path):
     )
     task = c["task"]["name"]
     assert set(reports[task]) == {
-        "ppo_v9", "ppo_v8", "pn_ctbr", "pd_ctbr", "pn_pd_ctbr"
+        "ppo_v9", "ppo_v8", "pn_ctbr", "pd_ctbr",
+        "pd_observed", "pd_observed_smoothed", "pn_pd_ctbr"
     }
     assert len({r["initial_state_digest"] for r in reports[task].values()}) == 1
     assert all(r["episodes"] == 2 for r in reports[task].values())
@@ -232,7 +233,7 @@ def test_unattended_pipeline_full_smoke_and_resume(tmp_path):
     assert row["status"] == "completed"
     assert row["physics_steps"] >= 80
     assert set(row["evaluations"]) == set(paths)
-    assert all(len(x) == 5 for x in row["evaluations"].values())
+    assert all(len(x) == 7 for x in row["evaluations"].values())
     assert len(result["stages"]["pilot"]["summary_by_variant"]) == 1
     ckpt = out / "pilot/joint_ppo/seed_42/checkpoints/latest.pt"
     assert ckpt.exists()
