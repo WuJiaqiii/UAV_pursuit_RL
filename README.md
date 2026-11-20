@@ -114,3 +114,18 @@ See [v9 runbook](docs/V9_UNATTENDED_GENERALIZATION.md) and
 `configs/experiments/05_v9_generalization.json`.
 The campaign is self-contained, checkpoint-based resumable, and selects by
 worst-task success rather than low-tail success alone.
+
+## v10: executed-action DAgger, tilt guard and observed-PD comparison
+
+The proposed v10 improvements keep the inference policy as **direct 4D CTBR**,
+while matching BC to the executed autoregressive Actor action, retaining
+full Actor state in DAgger and optionally adding a predictive tilt cost and
+a small on-policy PD imitation loss. The independent pure-PD references
+now include Actor-observation-only and action-smoothed baselines, in
+addition to the privileged geometric PD oracle.
+
+See [v10 experiment notes](docs/V10_PD_ASSISTED_CTBR.md) and
+`configs/experiments/06_v10_pd_assisted_ctbr.json`.
+Start a complete matched experiment using
+`bash scripts/launch_v10.sh TAIL_BEST.pt STATIC_BEST.pt [OUTPUT_DIR]`.
+
