@@ -85,6 +85,7 @@ DEFAULT = {
         "bc_samples": 40000,
         "bc_updates": 0,
         "bc_rounds": 1,
+        "aux_pd_coef": 0.0,
         "bc_stride": 2,
         "bc_segment_seconds": 0.5,
         "initialization_episodes": 32,
@@ -102,6 +103,9 @@ DEFAULT = {
     "reward": {
         "scale": 0.1,
         "tilt": 0.08,
+        "tilt_guard": 0.0,
+        "tilt_guard_start_deg": 55.0,
+        "tilt_guard_lookahead_s": 0.12,
         "rate": 0.01,
         "progress": 0.3,
         "action_derivative": 1e-5,
@@ -178,6 +182,7 @@ def validate(c):
     if not finite(c):
         raise ValueError("Nonfinite configuration")
     p, t, tr, pol = (c[k] for k in ("physics", "task", "training", "policy"))
+    reward = c["reward"]
     if p["dt"] != 0.001 or p["substeps"] != 1:
         raise ValueError("Physics integration must be 1 ms")
     if not 0 <= p["thrust_min"] < p["hover_thrust"] < p["thrust_max"]:
@@ -222,6 +227,12 @@ def validate(c):
         raise ValueError("Invalid training.bc_rounds")
     if tr["bc_updates"] > 0 and tr["bc_rounds"] > tr["bc_updates"]:
         raise ValueError("training.bc_rounds cannot exceed bc_updates")
+    if not 0 <= tr["aux_pd_coef"] <= 1:
+        raise ValueError("training.aux_pd_coef must be in [0, 1]")
+    if (reward["tilt_guard"] < 0
+            or not 0 <= reward["tilt_guard_start_deg"] < p["max_tilt_deg"]
+            or not 0 <= reward["tilt_guard_lookahead_s"] <= 1.0):
+        raise ValueError("Invalid predictive tilt guard parameters")
     for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "initialization_episodes"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError(f"Invalid training.{key}")
@@ -237,7 +248,7 @@ def validate(c):
     fractions = [tr["replay_recent_fraction"], tr["replay_anchor_fraction"]]
     if any(not 0 <= f < 1 for f in fractions) or sum(fractions) >= 1 or tr["mc_max_regression_fraction"] < 0:
         raise ValueError("Invalid replay/MC calibration fractions")
-    if tr["teacher_method"] not in ("pd", "pn", "pn_hybrid") or tr["teacher_pn_gain"] <= 0 or tr["teacher_switch_distance_m"] <= 0 or tr["teacher_accel_limit"] <= 0 or not 0 < tr["teacher_tilt_limit_deg"] <= p["max_tilt_deg"]:
+    if tr["teacher_method"] not in ("pd", "pn", "pn_hybrid", "pd_observed", "pd_observed_smoothed") or tr["teacher_pn_gain"] <= 0 or tr["teacher_switch_distance_m"] <= 0 or tr["teacher_accel_limit"] <= 0 or not 0 < tr["teacher_tilt_limit_deg"] <= p["max_tilt_deg"]:
         raise ValueError("Invalid geometric teacher")
     if t["encounter"] not in ("random", "tail", "head_on") or t["initial_pursuer_heading"] not in ("same", "opposite", "random"):
         raise ValueError("Invalid encounter/initial direction")
