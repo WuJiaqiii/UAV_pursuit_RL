@@ -11,6 +11,24 @@ from .control import limit
 PRIVILEGED_DIM = 32
 
 
+def tilt_guard_cost(tilt, rotation, body_rate, limit_deg, start_deg, horizon_s):
+    """Soft current/predicted attitude cost before the hard tilt boundary.
+
+    The short-horizon prediction uses the instantaneous geometric tilt rate.
+    This is reward shaping, NOT an invariant-set or hard-safety guarantee.
+    """
+    derivative_r33 = (
+        rotation[:, 2, 0] * body_rate[:, 1]
+        - rotation[:, 2, 1] * body_rate[:, 0]
+    )
+    outward_rate = -derivative_r33 / tilt.sin().clamp_min(0.1)
+    projected = (tilt + horizon_s * outward_rate).clamp_min(0.0)
+    warning = torch.maximum(tilt, projected)
+    margin = math.radians(limit_deg - start_deg)
+    return ((warning - math.radians(start_deg)).clamp_min(0.0) / margin).square()
+
+
+
 class CTBRBatch:
     def __init__(self, config, n=None, seed=None):
         self.config = validate(config)
@@ -513,8 +531,15 @@ class CTBRBatch:
         scale_v = c["entry_velocity_scale_mps"]
         braking = ((closing_speed - allowable_closing).clamp_min(0.0) / scale_v).square()
         velocity_cost = (v_error / scale_v).square() * torch.exp(-distance / length)
+        tilt_guard = (
+            tilt_guard_cost(
+                tilt, u.rot, u.rate, p["max_tilt_deg"],
+                r["tilt_guard_start_deg"], r["tilt_guard_lookahead_s"],
+            ) if r["tilt_guard"] > 0 else torch.zeros_like(tilt)
+        )
         components = {
             "tilt": -self.dt * r["tilt"] * tilt.square(),
+            "tilt_guard": -self.dt * r["tilt_guard"] * tilt_guard,
             "rate": -self.dt * r["rate"]
                     * (u.rate / self.plant.rate_limits).square().sum(1),
             "progress": progress_reward,
