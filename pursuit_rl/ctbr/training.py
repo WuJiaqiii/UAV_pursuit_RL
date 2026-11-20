@@ -62,9 +62,8 @@ def imitation_data(c, model=None, seed=10000):
     while count < c["training"]["bc_samples"]:
         target = teacher(env)
         if tick % c["training"]["bc_stride"] == 0:
-            clean = obs.clone()
-            clean[:, 21:] = 0
-            states.append(clean)
+            # Preserve body rates, thrust and prior CTBR actions used by Actor.
+            states.append(obs.clone())
             labels.append(target.clone())
             count += env.n
         action = (
@@ -88,40 +87,43 @@ def imitation_data(c, model=None, seed=10000):
 
 
 def fit_actor(model, data, updates, batch_size):
-    """Condition supervised regression, then fold normalization into the first layer.
+    """Regress the ACTUALLY EXECUTED deterministic CTBR from full Actor state.
 
-    Only the teacher's sufficient current kinematics are used. Actuator state,
-    time, boundaries, goals and raw-action memory are excluded to prevent
-    shortcuts. PPO still receives the complete original observation.
+    Frozen predictor features and the autoregressive raw-action mix match the
+    policy used by PPO. Normalization is folded into the Actor's first layer
+    and removed afterwards without changing its direct-CTBR architecture.
     """
-    x, y = data
+    observations, y = data
     first = model.actor[0]
-    inputs = x
-    x = inputs.new_zeros(len(inputs), first.in_features)
-    x[:, :21] = inputs[:, :21]
-    x = model.bound_actor_input(x)
+    with torch.no_grad():
+        x = model.bound_actor_input(model.actor_features(observations)).detach()
+    if x.shape[-1] != first.in_features:
+        raise ValueError("Imitation features do not match Actor input")
     center = x.mean(0)
     scale = x.std(0, unbiased=False).clamp_min(0.01)
-    scale[21:] = 1
     with torch.no_grad():
-        first.weight[:, 21:] = 0
         original = first.weight.clone()
         first.weight.mul_(scale)
         first.bias.add_(original @ center)
     normalized = (x - center) / scale
+    previous_raw = (
+        x[:, model.memory_start : model.memory_start + model.action_dim]
+        if model.rho else None
+    )
     output_scale = y.std(0, unbiased=False).clamp_min(0.02)
     opt = torch.optim.Adam(model.actor.parameters(), lr=1e-3)
     loss = None
     try:
         for _ in range(updates):
-            ids = torch.randint(len(x), (min(batch_size, len(x)),), device=model.device)
-            loss = (
-                ((torch.tanh(model.actor(normalized[ids])) - y[ids]) / output_scale)
-                .square()
-                .mean()
-            )
+            ids = torch.randint(len(x), (min(batch_size, len(x)),),
+                                device=model.device)
+            mean = model.actor(normalized[ids])
+            if previous_raw is not None:
+                mean = model.rho * previous_raw[ids] + (1.0 - model.rho) * mean
+            executed = torch.tanh(mean)
+            loss = ((executed - y[ids]) / output_scale).square().mean()
             if not bool(torch.isfinite(loss)):
-                raise FloatingPointError("Nonfinite imitation loss")
+                raise FloatingPointError("Nonfinite executed-action imitation loss")
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -597,6 +599,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
     write_json(root / "config.json", c)
     frozen_teachers = {}
     distill_coef = float((distillation or {}).get("coefficient", 0))
+    aux_pd_coef = float(tr["aux_pd_coef"])
     if distill_coef > 0:
         for task, path in distillation["teachers"].items():
             previous, previous_config, _ = load(path, c["device"])
@@ -665,6 +668,12 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
         for tick in range(ticks):
             try:
+                if aux_pd_coef > 0:
+                    # Teacher supervises sampled states only; no runtime mixing.
+                    buf.teacher[tick] = (
+                        torch.cat([teacher(part) for part in env.groups], 0)
+                        if hasattr(env, "groups") else teacher(env)
+                    )
                 action, raw, lp, value_pred = model.sample_tensor(obs, priv)
                 if distill_coef > 0:
                     with torch.no_grad():
@@ -768,7 +777,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             progress=copy.deepcopy(progress),
         )
         try:
-            stats = model.update(buf, aux_pd_coef=0.0, distill_coef=distill_coef)
+            stats = model.update(buf, aux_pd_coef=aux_pd_coef, distill_coef=distill_coef)
         except Exception as exc:
             if not (root / "first_anomaly.pt").exists():
                 torch.save(
