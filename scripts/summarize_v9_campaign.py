@@ -14,6 +14,8 @@ FIELDS = [
     "successes", "episodes", "success_rate",
     "wilson_95_lower", "wilson_95_upper",
     "delta_success_vs_pn",
+    "delta_success_vs_pd_observed",
+    "delta_success_vs_pd_observed_smoothed",
     "unsafe_entry_rate", "mean_entry_time_s",
     "mean_entry_relative_speed_mps", "mean_minimum_distance_m",
     "mean_action_saturation_fraction", "per_seed_success_rates",
@@ -27,6 +29,8 @@ def rows(results):
             for distribution, tasks in categories.items():
                 for task, methods in tasks.items():
                     pn = methods.get("pn_ctbr", {}).get("success_rate")
+                    pd_obs = methods.get("pd_observed", {}).get("success_rate")
+                    pd_obs_smooth = methods.get("pd_observed_smoothed", {}).get("success_rate")
                     for method, report in methods.items():
                         success = report["success_rate"]
                         yield dict(
@@ -39,6 +43,13 @@ def rows(results):
                             wilson_95_upper=report["wilson_95"][1],
                             delta_success_vs_pn=(
                                 success - pn if pn is not None else None
+                            ),
+                            delta_success_vs_pd_observed=(
+                                success - pd_obs if pd_obs is not None else None
+                            ),
+                            delta_success_vs_pd_observed_smoothed=(
+                                success - pd_obs_smooth
+                                if pd_obs_smooth is not None else None
                             ),
                             unsafe_entry_rate=report.get("unsafe_entry_rate"),
                             mean_entry_time_s=report.get("mean_entry_time_s"),

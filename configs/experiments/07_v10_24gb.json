@@ -1,0 +1,183 @@
+{
+  "schema": "pursuit-v9-generalization-campaign-v1",
+  "description": "V10 24GB-friendly controlled ablation (direct CTBR; identical task mix, PD reference and heldout speed groups; smaller PPO/DAgger batches, smaller training budgets and matched seeds)",
+  "primary": "02_low_tail",
+  "profiles": {
+    "01_static": "configs/first_entry_highspeed/01_static.json",
+    "02_low_tail": "configs/first_entry_highspeed/02_low_tail.json",
+    "03_low_head_on": "configs/first_entry_highspeed/03_low_head_on.json",
+    "04_low_random": "configs/first_entry_highspeed/04_low_random.json"
+  },
+  "num_envs": 32,
+  "teacher_method": "pd_observed",
+  "evaluation_seed_offset": 279000,
+  "training_defaults": {
+    "bc_segment_seconds": 4,
+    "bc_samples": 10000,
+    "bc_stride": 2,
+    "bc_updates": 0,
+    "bc_rounds": 1,
+    "initialization_success_floor": 0,
+    "rollout_steps": 256,
+    "batch_size": 512,
+    "epochs": 3,
+    "validation_seed": 78000,
+    "mc_calibration_every_updates": 0,
+    "mc_calibration_updates": 8,
+    "prediction_updates_enabled": false,
+    "minimum_success": 0.95,
+    "save_every_updates": 20,
+    "validation_episodes": 16
+  },
+  "stages": {
+    "pilot": {
+      "seeds": [
+        42,
+        43
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 32,
+      "training": {
+        "physics_steps": 4000000,
+        "validation_every": 1000000,
+        "validation_episodes": 16,
+        "critic_updates": 200,
+        "mc_episodes": 8
+      },
+      "top_k": 2
+    },
+    "full": {
+      "seeds": [
+        42,
+        43
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 64,
+      "training": {
+        "physics_steps": 20000000,
+        "validation_every": 4000000,
+        "validation_episodes": 24,
+        "critic_updates": 300,
+        "mc_episodes": 8
+      },
+      "top_k": 2,
+      "minimum_previous_worst": 0,
+      "ood_eval_episodes": 32
+    },
+    "confirmation": {
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "variants": [
+        "dagger4_guard_no_aux",
+        "dagger4_guard_pd_aux"
+      ],
+      "final_eval_episodes": 128,
+      "training": {
+        "physics_steps": 40000000,
+        "validation_every": 8000000,
+        "validation_episodes": 32,
+        "critic_updates": 400,
+        "mc_episodes": 12
+      },
+      "top_k": 2,
+      "minimum_previous_worst": 0,
+      "ood_eval_episodes": 64
+    }
+  },
+  "variants": [
+    {
+      "name": "dagger4_guard_no_aux",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 400,
+      "bc_rounds": 4,
+      "multitask_bc": true,
+      "reward": {
+        "tilt_guard": 3,
+        "tilt_guard_start_deg": 55,
+        "tilt_guard_lookahead_s": 0.12
+      },
+      "training": {
+        "aux_pd_coef": 0
+      }
+    },
+    {
+      "name": "dagger4_guard_pd_aux",
+      "mix": {
+        "01_static": 0.2,
+        "02_low_tail": 0.25,
+        "03_low_head_on": 0.25,
+        "04_low_random": 0.3
+      },
+      "distill_coef": 0.05,
+      "bc_updates": 400,
+      "bc_rounds": 4,
+      "multitask_bc": true,
+      "reward": {
+        "tilt_guard": 3,
+        "tilt_guard_start_deg": 55,
+        "tilt_guard_lookahead_s": 0.12
+      },
+      "training": {
+        "aux_pd_coef": 0.02
+      }
+    }
+  ],
+  "heldout_profiles": {
+    "holdout_tail_wider": "configs/experiments/holdout_tail_wider.json",
+    "holdout_head_faster": "configs/experiments/holdout_head_faster.json",
+    "holdout_random_stronger": "configs/experiments/holdout_random_stronger.json"
+  },
+  "stress_profiles": {
+    "05_medium_tail": "configs/first_entry_highspeed/05_medium_tail.json",
+    "06_medium_head_on": "configs/first_entry_highspeed/06_medium_head_on.json",
+    "07_medium_random": "configs/first_entry_highspeed/07_medium_random.json",
+    "08_high_tail": "configs/first_entry_highspeed/08_high_tail.json",
+    "09_high_head_on": "configs/first_entry_highspeed/09_high_head_on.json",
+    "10_high_random": "configs/first_entry_highspeed/10_high_random.json",
+    "11_extreme_tail": "configs/first_entry_highspeed/11_extreme_tail.json",
+    "12_extreme_head_on": "configs/first_entry_highspeed/12_extreme_head_on.json",
+    "13_extreme_random": "configs/first_entry_highspeed/13_extreme_random.json"
+  },
+  "stress_groups": {
+    "medium": [
+      "05_medium_tail",
+      "06_medium_head_on",
+      "07_medium_random"
+    ],
+    "high": [
+      "08_high_tail",
+      "09_high_head_on",
+      "10_high_random"
+    ],
+    "extreme": [
+      "11_extreme_tail",
+      "12_extreme_head_on",
+      "13_extreme_random"
+    ]
+  },
+  "stress_evaluation": {
+    "default_episodes": 16,
+    "default_methods": [
+      "ppo_v9",
+      "pd_observed",
+      "pd_observed_smoothed",
+      "pd_ctbr"
+    ],
+    "independent_from_training": true
+  }
+}

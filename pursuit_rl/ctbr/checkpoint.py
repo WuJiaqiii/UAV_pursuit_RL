@@ -126,16 +126,40 @@ def load(path, device=None, optimizers=False):
             "Unsupported checkpoint: this first-entry-only build does not load old versions"
         )
     c = validate(merge(copy.deepcopy(DEFAULT), data["config"]))
-    config_fingerprint_matches = fingerprint(c) == data["fingerprint"]
-    # v8 checkpoints created before bc_rounds was introduced omit that field.
-    # The new default is one round, so accept only the exact legacy fingerprint
-    # obtained by removing this single newly-added default field.
-    if not config_fingerprint_matches and "bc_rounds" not in data["config"].get("training", {}):
-        legacy_config = copy.deepcopy(c)
-        legacy_config["training"].pop("bc_rounds", None)
-        config_fingerprint_matches = fingerprint(legacy_config) == data["fingerprint"]
-    if not config_fingerprint_matches or interface(c) != data["interface"]:
-        raise ValueError("Corrupt or mismatched first-entry checkpoint contract")
+    # Historical v8/v9 archives predate optional DAgger and tilt-guard
+    # defaults. The fingerprint and interface must be checked against the
+    # *same* original contract, not a merged contract with new reward keys.
+    legacy_config = copy.deepcopy(c)
+    for section, keys in {
+        "training": ("bc_rounds", "aux_pd_coef"),
+        "reward": ("tilt_guard", "tilt_guard_start_deg",
+                   "tilt_guard_lookahead_s"),
+    }.items():
+        original_section = data["config"].get(section, {})
+        for key in keys:
+            if key not in original_section:
+                legacy_config[section].pop(key, None)
+    # A valid archive must match either the current merged contract or the
+    # original complete contract. Never skip verification or rewrite weights.
+    valid_fingerprint = (
+        fingerprint(c) == data["fingerprint"]
+        or fingerprint(legacy_config) == data["fingerprint"]
+    )
+    if not valid_fingerprint:
+        raise ValueError(
+            "Corrupt or mismatched first-entry checkpoint CONFIG fingerprint; "
+            "check that the file is the intended V8/V9 CTBR checkpoint"
+        )
+    valid_interface = (
+        interface(c) == data["interface"]
+        or interface(legacy_config) == data["interface"]
+    )
+    if not valid_interface:
+        raise ValueError(
+            "Corrupt or mismatched first-entry checkpoint INTERFACE; "
+            "the stored action, observation, physics, policy or reward contract "
+            "does not match this V10 model"
+        )
     if device is not None:
         c["device"] = device
     model = new_model(c, optimizers)
