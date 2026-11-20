@@ -153,3 +153,83 @@ trajectory replay.
 Experimental configuration changes invalidate the previous V10 campaign
 manifest. If training is already running, do not overwrite its plan/branch
 mid-run; use an unchanged source snapshot or a fresh experiment directory.
+
+
+## 24 GB GPU / CUDA out-of-memory mitigation
+
+V10 previously evaluated all cumulative DAgger observations through the
+frozen LSTM predictor in **one forward pass**. Four rounds of 40,000 samples
+mean up to 160,000 histories in a single `actor_features(...)` call. cuDNN
+can allocate a workspace far larger than the eventual feature array.
+
+The new `fit_actor` computes frozen predictor features in no-grad minibatches
+of **at most 256 samples**, regardless of DAgger dataset size. This fixes
+the particular unbounded-LSTM-workspace failure mode without changing the
+Actor architecture, teacher labels, loss definition or CTBR output. If a new
+OOM occurs elsewhere, capture its *full traceback* for diagnosis.
+
+A separate reduced-budget, reduced-memory experiment plan lives at
+`configs/experiments/07_v10_24gb.json`. It preserves the same task mixture,
+teacher methods, heldout tests, two matched algorithm variants, and nine
+historical medium/high/extreme stress tasks.
+
+| Item | Original V10 | 24 GB preset |
+|---|---:|---:|
+| Concurrent environments | 64 | 32 |
+| PPO rollout decision steps | 512 | 256 |
+| PPO minibatch | 2048 | 512 |
+| DAgger samples / round | 40,000 | 10,000 |
+| BC optimizer updates / run | 1000 | 400 |
+| Pilot | 2 seeds × 8M physics steps | 2 seeds × 4M |
+| Full | 3 seeds × 40M | 2 seeds × 20M |
+| Confirmation | 5 seeds × 80M | 3 seeds × 40M |
+
+Total planned PPO physics steps across both variants decrease from
+1,072M to **336M**. Lower budgets reduce runtime, while batch/env/sample
+limits and the LSTM fix reduce peak memory consumption. Smaller training
+budgets may reduce eventual task success; do **not** pool 24GB-preset results
+with original-budget results as if they were matched experiments.
+
+### Clean Pilot first (recommended)
+
+```bash
+git fetch origin
+git switch feat/v10-ctbr-safe-dagger-pd-aux
+git pull --ff-only
+
+pytest -q tests/test_v10_pd_assisted_ctbr.py
+
+python -m scripts.run_generalization_campaign \
+  --plan configs/experiments/07_v10_24gb.json \
+  --parent-checkpoint "$PARENT" \
+  --static-checkpoint "$STATIC" \
+  --out runs/v10_24gb --stage pilot --device cuda
+```
+
+To continue automatically through Full and Confirmation (the launcher
+will resume the completed Pilot without repeating it):
+
+```bash
+V10_PLAN=configs/experiments/07_v10_24gb.json \
+bash scripts/launch_v10.sh "$PARENT" "$STATIC" runs/v10_24gb
+```
+
+When confirmation has completed, run its independent high-speed benchmarks
+with the same plan selected:
+
+```bash
+V10_PLAN=configs/experiments/07_v10_24gb.json \
+V10_STRESS_EPISODES=32 \
+bash scripts/launch_v10_stress.sh runs/v10_24gb medium high extreme
+```
+
+**Do not reuse the original `runs/v10_pd_assisted_ctbr` directory after
+changing the experiment plan or source code.** The campaign manifest
+checks exact source and configuration hashes. Failed pre-checkpoint runs
+and resumed runs may also carry source hashes; use a fresh output directory
+for the fixed low-memory version.
+
+If resource usage remains unexpectedly high after the LSTM fix, locate
+the exact failing operation from the Python stack trace and inspect GPU
+memory using `nvidia-smi`, rather than assuming reducing total physics
+steps alone changes peak VRAM.
