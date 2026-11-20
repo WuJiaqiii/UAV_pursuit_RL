@@ -10,7 +10,7 @@ STATIC=$(realpath "$2")
 OUT=$(realpath -m "${3:-runs/v10_generalization}")
 [[ -f "$PARENT" && -f "$STATIC" ]] || { echo "Missing input checkpoint"; exit 2; }
 mkdir -p "$OUT"
-PLAN="configs/experiments/05_v10_generalization.json"
+PLAN="configs/experiments/06_v10_pd_assisted_ctbr.json"
 if [[ -e "$OUT/campaign.pid" ]] && kill -0 "$(cat "$OUT/campaign.pid")" 2>/dev/null; then
   echo "v10 campaign already running, PID $(cat "$OUT/campaign.pid")"
   exit 1
