@@ -81,3 +81,75 @@ pytest -q tests/test_v10_pd_assisted_ctbr.py tests/test_v9_generalization.py
 This research environment uses perfect state observations and a simplified
 closed-loop rigid-body model. Performance improvements and hard physical
 safety are **not claimed** until independent experiments are completed.
+
+## Medium, high and extreme speed independent stress tests (stages 05–13)
+
+The v10 plan additionally registers the **original first-entry task definitions**
+from `configs/first_entry_highspeed/05_*.json` through `13_*.json`:
+
+| Group | Original stages | Target speed (m/s) | Encounter types |
+|---|---|---|---|
+| medium | 05–07 | 15–20 | tail, head-on, random |
+| high | 08–10 | 40–45 | tail, head-on, random |
+| extreme | 11–13 | 45–50 | tail, head-on, random |
+
+Distances, pursuer initial speeds, random-target motion intensity and episode
+deadlines are inherited from those exact original task profiles. **Only the
+task portion is overlaid on the parent checkpoint's common physics, reward
+and Actor contract**, so all comparisons use the same model interface,
+2.5g thrust, 70-degree attitude limit and 15 m/s first-entry speed gate.
+
+These stress tasks are **not** added to the four-task training mixture,
+per-iteration validation, checkpoint selection or stage promotion; they
+are an *independent post-training test set*. They must not be used to claim
+training convergence at 40–50 m/s before evaluating the resulting models.
+
+Run after the V10 experiment has completed its chosen stage:
+
+```bash
+# One-seed/one-variant screening, just medium speed, 16 episodes per task.
+python -m scripts.run_highspeed_stress \
+  --campaign-results runs/v10_pd_assisted_ctbr/campaign_results.json \
+  --stage confirmation --groups medium --episodes 16 \
+  --variants dagger4_guard_pd_aux --seeds 42 --device cuda \
+  --out runs/v10_medium_screen
+
+# Full three-band benchmark, both trained variants and all completed seeds.
+# Default: 32 episodes per (task, controller, seed).
+python -m scripts.run_highspeed_stress \
+  --campaign-results runs/v10_pd_assisted_ctbr/campaign_results.json \
+  --stage confirmation --groups medium high extreme --device cuda \
+  --out runs/v10_highspeed_final
+```
+
+Alternatively, start a persistent background benchmark:
+
+```bash
+V10_STRESS_EPISODES=32 bash scripts/launch_v10_stress.sh \
+  runs/v10_pd_assisted_ctbr medium high extreme
+```
+
+The stress evaluator writes `stress_manifest.json`, `stress_results.json`,
+`stress_summary.csv`, and per-controller/per-task episode JSON files. It
+supports `--resume-existing` with exactly the same selected checkpoints,
+plan, source, groups, seeds, methods and episode count. A different workload
+requires a fresh `--out` directory. A `--dry-run` validates the intended
+selection and prints a manifest without launching evaluations.
+
+Default controller set is `ppo_v9` (the newly trained V10 model under the
+legacy report key), `pd_observed`, `pd_observed_smoothed` and the privileged
+`pd_ctbr` oracle. `--methods` may also select `ppo_v8`, `pn_ctbr` and
+`pn_pd_ctbr`. The CSV reports success-rate deltas against the observed
+PD reference and the filtered observed PD reference.
+
+**Interpretation caveats:** the historical medium/high/extreme configurations
+may contain geometries that are not dynamically reachable under the 2.5g and
+first-safe-entry constraints. A zero success rate, even for PD, does not
+by itself prove the goal is infeasible. Evaluate reachability separately.
+Matching initial-state digests do not establish identical stochastic target
+trajectories at every step, so fully paired counterfactual conclusions require
+trajectory replay.
+
+Experimental configuration changes invalidate the previous V10 campaign
+manifest. If training is already running, do not overwrite its plan/branch
+mid-run; use an unchanged source snapshot or a fresh experiment directory.
