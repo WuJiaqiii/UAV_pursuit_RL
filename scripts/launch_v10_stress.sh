@@ -8,11 +8,11 @@ if [[ $# -lt 1 ]]; then
 fi
 CAMPAIGN=$(realpath "$1")
 shift
-GROUPS=( "$@" )
-if [[ ${#GROUPS[@]} -eq 0 ]]; then
-  GROUPS=(medium)
+STRESS_GROUPS=( "$@" )
+if [[ ${#STRESS_GROUPS[@]} -eq 0 ]]; then
+  STRESS_GROUPS=(medium)
 fi
-for group in "${GROUPS[@]}"; do
+for group in "${STRESS_GROUPS[@]}"; do
   case "$group" in
     medium|high|extreme) ;;
     *) echo "Unknown group: $group" >&2; exit 2 ;;
@@ -22,7 +22,7 @@ if [[ ! -f "$CAMPAIGN/campaign_results.json" ]]; then
   echo "Missing campaign results: $CAMPAIGN/campaign_results.json" >&2
   exit 2
 fi
-GROUP_NAME=$(IFS=_; echo "${GROUPS[*]}")
+GROUP_NAME=$(IFS=_; echo "${STRESS_GROUPS[*]}")
 OUT="$CAMPAIGN/highspeed_stress_$GROUP_NAME"
 LOG="$CAMPAIGN/highspeed_stress_$GROUP_NAME.log"
 PIDFILE="$CAMPAIGN/highspeed_stress_$GROUP_NAME.pid"
@@ -39,7 +39,7 @@ DEVICE=${V10_STRESS_DEVICE:-cuda}
 nohup python -u -m scripts.run_highspeed_stress \
     --campaign-results "$CAMPAIGN/campaign_results.json" \
     --plan configs/experiments/06_v10_pd_assisted_ctbr.json \
-    --stage confirmation --groups "${GROUPS[@]}" \
+    --stage confirmation --groups "${STRESS_GROUPS[@]}" \
     --episodes "$EPISODES" --device "$DEVICE" --out "$OUT" \
     "${EXTRA[@]}" >> "$LOG" 2>&1 < /dev/null &
 echo "$!" > "$PIDFILE"
