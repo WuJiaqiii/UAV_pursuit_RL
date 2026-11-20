@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from pursuit_rl.ctbr.checkpoint import load as load_checkpoint, new_model, save
-from pursuit_rl.ctbr.config import fingerprint, load, validate
+from pursuit_rl.ctbr.config import fingerprint, interface, load, validate
 from pursuit_rl.ctbr.control import observed_pd, teacher
 from pursuit_rl.ctbr.environment import CTBRBatch, tilt_guard_cost
 from pursuit_rl.ctbr.training import fit_actor, imitation_data, train
@@ -125,10 +125,33 @@ def test_old_checkpoint_fingerprint_still_loads(tmp_path):
     for key in ("tilt_guard", "tilt_guard_start_deg", "tilt_guard_lookahead_s"):
         data["config"]["reward"].pop(key)
     data["fingerprint"] = fingerprint(data["config"])
+    # Genuine V8/V9 archives also persist the historical reward keys inside
+    # the interface, not the V10 interface with newly injected defaults.
+    data["interface"] = interface(data["config"])
     torch.save(data, filename)
     _, restored, _ = load_checkpoint(filename)
     assert restored["training"]["aux_pd_coef"] == 0
     assert restored["reward"]["tilt_guard"] == 0
+    assert restored["reward"]["tilt_guard_start_deg"] == 55.0
+    # A second load with the new defaults/contract remains valid too.
+    save(filename, new_model(c, optimizers=False), c,
+         {"physics_steps": 0, "ppo_updates": 0}, "v10")
+    _, modern, _ = load_checkpoint(filename)
+    assert modern["reward"]["tilt_guard"] == 0
+
+
+def test_legacy_interface_tampering_is_not_accepted(tmp_path):
+    c = config()
+    filename = tmp_path / "bad_interface.pt"
+    save(filename, new_model(c, optimizers=False), c,
+         {"physics_steps": 0, "ppo_updates": 0}, "test")
+    data = torch.load(filename, weights_only=False)
+    # The interface is independently checked even if the config fingerprint
+    # is authentic. Do not silently accept arbitrary mismatched CTBR physics.
+    data["interface"]["physics"]["rate_xy"] *= 1.1
+    torch.save(data, filename)
+    with pytest.raises(ValueError, match="INTERFACE"):
+        load_checkpoint(filename)
 
 
 def test_matched_pd_auxiliary_experiment_plan():
