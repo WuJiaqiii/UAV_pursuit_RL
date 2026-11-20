@@ -23,6 +23,8 @@ if [[ ! -f "$CAMPAIGN/campaign_results.json" ]]; then
   exit 2
 fi
 GROUP_NAME=$(IFS=_; echo "${STRESS_GROUPS[*]}")
+PLAN="${V10_PLAN:-configs/experiments/06_v10_pd_assisted_ctbr.json}"
+[[ -f "$PLAN" ]] || { echo "Missing experiment plan: $PLAN"; exit 2; }
 OUT="$CAMPAIGN/highspeed_stress_$GROUP_NAME"
 LOG="$CAMPAIGN/highspeed_stress_$GROUP_NAME.log"
 PIDFILE="$CAMPAIGN/highspeed_stress_$GROUP_NAME.pid"
@@ -38,7 +40,7 @@ EPISODES=${V10_STRESS_EPISODES:-32}
 DEVICE=${V10_STRESS_DEVICE:-cuda}
 nohup python -u -m scripts.run_highspeed_stress \
     --campaign-results "$CAMPAIGN/campaign_results.json" \
-    --plan configs/experiments/06_v10_pd_assisted_ctbr.json \
+    --plan "$PLAN" \
     --stage confirmation --groups "${STRESS_GROUPS[@]}" \
     --episodes "$EPISODES" --device "$DEVICE" --out "$OUT" \
     "${EXTRA[@]}" >> "$LOG" 2>&1 < /dev/null &
