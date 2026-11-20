@@ -129,3 +129,8 @@ See [v10 experiment notes](docs/V10_PD_ASSISTED_CTBR.md) and
 Start a complete matched experiment using
 `bash scripts/launch_v10.sh TAIL_BEST.pt STATIC_BEST.pt [OUTPUT_DIR]`.
 
+Independent evaluation of the original 15–20, 40–45 and 45–50 m/s
+stage-05–13 profiles is available separately, without altering PPO training:
+`bash scripts/launch_v10_stress.sh CAMPAIGN_DIR medium high extreme`.
+The nine stress tasks are not part of checkpoint selection.
+
