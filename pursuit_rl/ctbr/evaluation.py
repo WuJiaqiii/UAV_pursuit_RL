@@ -201,6 +201,18 @@ def evaluate(
         successes=len(successes),
         success_rate=len(successes) / episodes,
         failures=dict(failures),
+        tilt_failure_count=failures.get("tilt", 0),
+        tilt_failure_rate=failures.get("tilt", 0) / episodes,
+        mean_maximum_tilt_deg=avg("maximum_tilt_deg"),
+        maximum_tilt_p95_deg=float(torch.quantile(
+            torch.tensor(
+                [r["maximum_tilt_deg"] for r in records],
+                dtype=torch.float64,
+            ), 0.95
+        )),
+        near_guard_episode_fraction=(
+            sum(r["maximum_tilt_deg"] >= 55.0 for r in records) / episodes
+        ),
         unsafe_entry_count=failures.get("unsafe_entry", 0),
         unsafe_entry_rate=failures.get("unsafe_entry", 0) / episodes,
         entry_radius_m=c["task"]["radius"],
