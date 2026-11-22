@@ -378,6 +378,9 @@ class TensorRolloutBuffer(_DiagnosticBuffer):
             )
         self.actuator_state = torch.zeros(shape + (4,), device=self.device)
         self.event_code = torch.zeros(shape, device=self.device, dtype=torch.int8)
+        for name in ("cost", "cost_values", "cost_next_values",
+                     "cost_advantage", "cost_returns"):
+            setattr(self, name, torch.zeros(shape, device=self.device))
         self._init_diagnostics(diagnostics)
 
     @torch.no_grad()
@@ -394,3 +397,21 @@ class TensorRolloutBuffer(_DiagnosticBuffer):
             self.delta[k] = delta
             self.advantage[k] = gae
         self.returns.copy_(self.advantage + self.values)
+
+    @torch.no_grad()
+    def compute_cost_gae(self, gamma, lam):
+        """Risk-cost GAE, with the same episode boundary semantics as PPO."""
+        gae = torch.zeros(self.cost.shape[1], device=self.device)
+        for k in range(self.cost.shape[0] - 1, -1, -1):
+            cont = ~(self.terminated[k] | self.truncated[k])
+            boot = ~self.terminated[k]
+            delta = (
+                self.cost[k]
+                + gamma * torch.where(
+                    boot, self.cost_next_values[k], 0.0
+                )
+                - self.cost_values[k]
+            )
+            gae = delta + gamma * lam * torch.where(cont, gae, 0.0)
+            self.cost_advantage[k] = gae
+        self.cost_returns.copy_(self.cost_advantage + self.cost_values)
