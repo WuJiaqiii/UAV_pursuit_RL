@@ -23,7 +23,7 @@ SCHEMA = "pursuit-first-entry-ctbr-checkpoint-v1"
 
 def model_config(c):
     p, t = c["policy"], c["training"]
-    return dict(
+    cfg = dict(
         action_dim=4,
         position_error_cap_m=p["position_error_cap_m"],
         hidden_actor=p["hidden_actor"],
@@ -51,6 +51,9 @@ def model_config(c):
         base_obs_dim=observation_dims(c)[0],
         separate_critic_updates=True,
     )
+    if c["safety"]["constraint_enabled"]:
+        cfg["safety"] = copy.deepcopy(c["safety"])
+    return cfg
 
 
 def new_model(c, optimizers=True):
@@ -97,6 +100,9 @@ def save(path, model, c, progress, origin):
         critic_optimizer=(
             model.critic_optimizer.state_dict() if model.critic_optimizer else None
         ),
+        cost_optimizer=(
+            model.cost_optimizer.state_dict() if model.cost_optimizer else None
+        ),
         predictor_optimizer=(
             model.predictor_optimizer.state_dict()
             if model.predictor_optimizer
@@ -130,10 +136,12 @@ def load(path, device=None, optimizers=False):
     # defaults. The fingerprint and interface must be checked against the
     # *same* original contract, not a merged contract with new reward keys.
     legacy_config = copy.deepcopy(c)
+    if "safety" not in data["config"]:
+        legacy_config.pop("safety", None)
     for section, keys in {
         "training": ("bc_rounds", "aux_pd_coef"),
         "reward": ("tilt_guard", "tilt_guard_start_deg",
-                   "tilt_guard_lookahead_s"),
+                   "tilt_guard_lookahead_s", "actuator_risk"),
     }.items():
         original_section = data["config"].get(section, {})
         for key in keys:
@@ -174,6 +182,10 @@ def load(path, device=None, optimizers=False):
             raise ValueError("Checkpoint has no trainable optimizer state")
         model.actor_optimizer.load_state_dict(data["actor_optimizer"])
         model.critic_optimizer.load_state_dict(data["critic_optimizer"])
+        if model.cost_optimizer is not None:
+            if data.get("cost_optimizer") is None:
+                raise ValueError("V11 constrained resume needs saved cost optimizer")
+            model.cost_optimizer.load_state_dict(data["cost_optimizer"])
         if model.predictor_optimizer is not None:
             model.predictor_optimizer.load_state_dict(data["predictor_optimizer"])
     return model, c, data
