@@ -203,3 +203,27 @@ perturbed initial states are recoverable before increasing their fraction.
 
 Do not change plan/source after a campaign starts: the manifest and checkpoint
 source hashes intentionally reject silent resumes after code edits.
+
+
+## Paired critical-state recovery probe (separate from normal heldout set)
+
+```bash
+python -m scripts.run_v11_recovery_probe \
+  --checkpoint runs/v11_actuator_safe_ppo/pilot/v11b_constrained_ppo/seed_42/checkpoints/best_current.pt \
+  --profile configs/experiments/holdout_random_stronger.json \
+  --episodes 256 --batch-size 32 --critical-fraction 0.5 \
+  --device cuda \
+  --out runs/v11_actuator_safe_ppo/recovery_probe.json
+```
+
+The script creates two independent, identically seeded environments at each
+batch: a trained deterministic PPO Actor and the observable-PD controller.
+Both start from identical relative positions, initial rotations, initial
+body rates and thrust. Target noise streams are seeded to match. It reports
+actual terminal outcomes, per-controller peak-tilt P95 and the number of
+states for which PD succeeds while PPO tilts out. It does **not** prove a
+state is in the true viability kernel or that PD is globally safe. Select
+probe seeds independently of training and of algorithm tuning.
+
+For the original V10 baseline, run the same probe and pass its checkpoint;
+the script disables training-only forecast reward/cost logic during replay.
