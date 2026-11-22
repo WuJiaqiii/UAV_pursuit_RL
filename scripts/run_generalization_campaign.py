@@ -169,6 +169,10 @@ def evaluate_methods(model, parent_model, task_profiles, episodes, seed, dest, m
                 successes=result["successes"],
                 success_rate=result["success_rate"],
                 unsafe_entry_rate=result["unsafe_entry_rate"],
+                tilt_failure_rate=result["tilt_failure_rate"],
+                mean_maximum_tilt_deg=result["mean_maximum_tilt_deg"],
+                maximum_tilt_p95_deg=result["maximum_tilt_p95_deg"],
+                near_guard_episode_fraction=result["near_guard_episode_fraction"],
                 failures=result["failures"],
                 mean_entry_time_s=result["mean_entry_time_s"],
                 mean_entry_relative_speed_mps=result["mean_entry_relative_speed_mps"],
@@ -213,6 +217,12 @@ def aggregate(per_seed):
             result[task][method] = dict(
                 successes=k, episodes=n, success_rate=p,
                 unsafe_entry_rate=average("unsafe_entry_rate"),
+                tilt_failure_rate=average("tilt_failure_rate"),
+                mean_maximum_tilt_deg=average("mean_maximum_tilt_deg"),
+                near_guard_episode_fraction=average("near_guard_episode_fraction"),
+                per_seed_maximum_tilt_p95_deg=[
+                    x.get("maximum_tilt_p95_deg") for x in records
+                ],
                 mean_entry_time_s=average("mean_entry_time_s", "successes"),
                 mean_entry_relative_speed_mps=average(
                     "mean_entry_relative_speed_mps", "successes"
