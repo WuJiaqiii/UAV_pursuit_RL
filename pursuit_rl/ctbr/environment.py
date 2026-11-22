@@ -7,6 +7,7 @@ from pursuit_rl.simulation.rigid_body import BodyBatch, exp_so3, norm
 from pursuit_rl.simulation.torch_device import resolve_torch_device
 from .config import KINDS, validate, decision_dt, observation_dims
 from .control import limit
+from .safety import predict_attitude_risk
 
 PRIVILEGED_DIM = 32
 
@@ -82,6 +83,15 @@ class CTBRBatch:
         self.initial_target_vel = torch.zeros_like(self.center)
         self.final_obs = None
         self.final_priv = None
+        # Curriculum is ramped *only* in training_env. Fresh evaluations use
+        # zero critical resets to preserve fair matched initial conditions.
+        self.critical_reset_fraction = (
+            0.0 if config["safety"]["curriculum_ramp_fraction"] > 0
+            else config["safety"]["critical_reset_fraction"]
+        )
+        self.max_tilt_seen = torch.zeros(self.n, device=self.device)
+        self.last_safety_cost = torch.zeros(self.n, device=self.device)
+        self.last_predicted_peak = torch.zeros(self.n, device=self.device)
         self.reset()
 
     def uniform(self, lo, hi, *shape):
@@ -110,6 +120,7 @@ class CTBRBatch:
         ):
             getattr(self, name)[mask] = 0
         self.minimum_distance[mask] = float("inf")
+        self.max_tilt_seen[mask] = 0.0
         self.ou[mask] = 0
         self.desired_acc[mask] = 0
         self.pattern[mask] = torch.randint(
@@ -219,6 +230,31 @@ class CTBRBatch:
             trimmed_rot = torch.stack((b1, b2, b3), 2)
             u.rot[mask] = trimmed_rot[mask]
             u.thrust[mask] = thrust[mask]
+        # Physically valid off-level initial states for risk-aware training.
+        # Rotations are composed after ordinary/trimmed initialization and
+        # before history is populated. These are NOT applied at evaluation.
+        active_critical = (
+            (torch.rand(n, device=self.device, generator=self.gen)
+             < self.critical_reset_fraction) & mask
+        )
+        if bool(active_critical.any()):
+            sc = self.config["safety"]
+            angle = self.uniform(
+                math.radians(sc["critical_tilt_min_deg"]),
+                math.radians(sc["critical_tilt_max_deg"]), n
+            )
+            heading = self.uniform(-math.pi, math.pi, n)
+            axis = torch.stack((
+                torch.cos(heading), torch.sin(heading),
+                torch.zeros_like(heading),
+            ), 1)
+            delta = exp_so3(axis * angle[:, None])
+            u.rot[active_critical] = (
+                u.rot.bmm(delta)
+            )[active_critical]
+            u.rate[active_critical] = (
+                axis * sc["critical_outward_rate"]
+            )[active_critical]
         self.command_velocity[mask] = t.vel[mask]
         self.initial_rel_pos[mask] = (t.pos - u.pos)[mask].float()
         self.initial_target_vel[mask] = t.vel[mask].float()
@@ -416,12 +452,21 @@ class CTBRBatch:
             started[:, None, None], updated, self.raw_history
         )
         derivative_cost = (action - old_action).square().sum(1) / self.decision_dt
+        safety = self.config["safety"]
+        if safety["predictive_enabled"]:
+            risk, predicted_peak, _ = predict_attitude_risk(self, action)
+        else:
+            risk = torch.zeros(self.n, device=self.device)
+            predicted_peak = torch.zeros_like(risk)
+        self.last_predicted_peak = predicted_peak.detach()
+        self._decision_risk = risk.detach()
         reward = torch.zeros(self.n, device=self.device)
         terminated = torch.zeros_like(self.finished)
         components = {}
         components_unscaled = {}
         records = []
         counts = torch.zeros(self.n, dtype=torch.long, device=self.device)
+        tilt_failures = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         for tick in range(self.decision_steps):
             counts += (~self.finished).long()
             step_reward, done, completed = self._physics_step(
@@ -430,6 +475,8 @@ class CTBRBatch:
             )
             discount = self.physics_gamma**tick
             reward += discount * step_reward
+            tilt_failures |= self._last_tilt_failure
+            self._decision_risk = torch.zeros_like(risk)
             for key, value in self.reward_components.items():
                 components[key] = components.get(key, 0.0) + discount * value
             for key, value in self.reward_components_unscaled.items():
@@ -438,6 +485,10 @@ class CTBRBatch:
                 )
             terminated |= done
             records.extend(completed)
+        self.last_safety_cost = (
+            safety["risk_cost_weight"] * risk +
+            safety["failure_cost"] * tilt_failures.float()
+        ).detach()
         self.last_physics_steps = int(counts.sum())
         self.last_physics_steps_per_env = counts
         self.reward_components = components
@@ -460,6 +511,11 @@ class CTBRBatch:
         distance = norm(t.pos - u.pos).float()
         v_error = norm(t.vel - u.vel).float()
         tilt = torch.acos(u.rot[:, 2, 2].clamp(-1, 1))
+        self.max_tilt_seen = torch.where(
+            active, torch.maximum(self.max_tilt_seen, tilt),
+            self.max_tilt_seen
+        )
+        self._last_tilt_failure = active & (tilt > math.radians(p["max_tilt_deg"]))
         speed = norm(u.vel)
         outside = (
             (u.pos[:, :2].abs() > p["workspace_xy"]).any(1)
@@ -540,6 +596,9 @@ class CTBRBatch:
         components = {
             "tilt": -self.dt * r["tilt"] * tilt.square(),
             "tilt_guard": -self.dt * r["tilt_guard"] * tilt_guard,
+            # One action-conditioned risk cost per CTBR decision (not per
+            # 1 ms physics substep): feed only on the first substep.
+            "actuator_risk": -r["actuator_risk"] * self._decision_risk,
             "rate": -self.dt * r["rate"]
                     * (u.rate / self.plant.rate_limits).square().sum(1),
             "progress": progress_reward,
@@ -606,6 +665,9 @@ class CTBRBatch:
                         target_max_speed=float(self.maximum_target_speed[slot]),
                         target_max_accel=float(self.maximum_target_accel[slot]),
                         target_max_jerk=float(self.maximum_target_jerk[slot]),
+                        maximum_tilt_deg=float(
+                            self.max_tilt_seen[slot] * (180.0 / math.pi)
+                        ),
                         action_saturation_fraction=float(
                             self.sat_count[slot] / self.ticks[slot].clamp_min(1)
                         ),
