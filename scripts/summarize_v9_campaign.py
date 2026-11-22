@@ -16,7 +16,9 @@ FIELDS = [
     "delta_success_vs_pn",
     "delta_success_vs_pd_observed",
     "delta_success_vs_pd_observed_smoothed",
-    "unsafe_entry_rate", "mean_entry_time_s",
+    "unsafe_entry_rate", "tilt_failure_rate", "mean_maximum_tilt_deg",
+    "near_guard_episode_fraction", "per_seed_maximum_tilt_p95_deg",
+    "mean_entry_time_s",
     "mean_entry_relative_speed_mps", "mean_minimum_distance_m",
     "mean_action_saturation_fraction", "per_seed_success_rates",
     "failures",
@@ -52,6 +54,12 @@ def rows(results):
                                 if pd_obs_smooth is not None else None
                             ),
                             unsafe_entry_rate=report.get("unsafe_entry_rate"),
+                            tilt_failure_rate=report.get("tilt_failure_rate"),
+                            mean_maximum_tilt_deg=report.get("mean_maximum_tilt_deg"),
+                            near_guard_episode_fraction=report.get("near_guard_episode_fraction"),
+                            per_seed_maximum_tilt_p95_deg=json.dumps(
+                                report.get("per_seed_maximum_tilt_p95_deg", [])
+                            ),
                             mean_entry_time_s=report.get("mean_entry_time_s"),
                             mean_entry_relative_speed_mps=report.get(
                                 "mean_entry_relative_speed_mps"
