@@ -100,10 +100,33 @@ DEFAULT = {
         "teacher_accel_limit": 16.0,
         "teacher_tilt_limit_deg": 65.0,
     },
+    "safety": {
+        "predictive_enabled": False,
+        "constraint_enabled": False,
+        "horizon_s": 0.12,
+        "prediction_step_s": 0.01,
+        "warning_deg": 55.0,
+        "uncertainty_deg": 2.0,
+        "recovery_rate_gain": 4.0,
+        "risk_cost_weight": 1.0,
+        "failure_cost": 1.0,
+        "cost_limit": 0.025,
+        "lagrangian_lr": 0.05,
+        "lagrangian_max": 10.0,
+        "cost_critic_lr": 1e-4,
+        "discount_time_s": 20.0,
+        "advantage_time_s": 3.0,
+        "critical_reset_fraction": 0.0,
+        "curriculum_ramp_fraction": 0.4,
+        "critical_tilt_min_deg": 35.0,
+        "critical_tilt_max_deg": 50.0,
+        "critical_outward_rate": 0.5,
+    },
     "reward": {
         "scale": 0.1,
         "tilt": 0.08,
         "tilt_guard": 0.0,
+        "actuator_risk": 0.0,
         "tilt_guard_start_deg": 55.0,
         "tilt_guard_lookahead_s": 0.12,
         "rate": 0.01,
@@ -233,6 +256,35 @@ def validate(c):
             or not 0 <= reward["tilt_guard_start_deg"] < p["max_tilt_deg"]
             or not 0 <= reward["tilt_guard_lookahead_s"] <= 1.0):
         raise ValueError("Invalid predictive tilt guard parameters")
+    safe = c["safety"]
+    if any(type(safe[k]) is not bool for k in ("predictive_enabled", "constraint_enabled")):
+        raise ValueError("Invalid safety enable flags")
+    if safe["constraint_enabled"] and not safe["predictive_enabled"]:
+        raise ValueError("Constrained PPO needs the action-aware risk predictor")
+    if (safe["horizon_s"] < dt or safe["prediction_step_s"] <= 0
+            or abs(round(safe["horizon_s"] / safe["prediction_step_s"])
+                   * safe["prediction_step_s"] - safe["horizon_s"]) > 1e-9
+            or abs(round(dt / safe["prediction_step_s"])
+                   * safe["prediction_step_s"] - dt) > 1e-9):
+        raise ValueError("Safety prediction step must divide decision and horizon durations")
+    if (not 0 <= safe["warning_deg"] < p["max_tilt_deg"]
+            or not 0 <= safe["uncertainty_deg"] < 20
+            or safe["recovery_rate_gain"] <= 0):
+        raise ValueError("Invalid attitude safety forecast settings")
+    for key in ("risk_cost_weight", "failure_cost", "cost_limit",
+                "lagrangian_lr", "lagrangian_max", "cost_critic_lr",
+                "discount_time_s", "advantage_time_s"):
+        if safe[key] <= 0:
+            raise ValueError(f"Invalid safety.{key}")
+    if safe["advantage_time_s"] > safe["discount_time_s"]:
+        raise ValueError("Safety advantage horizon exceeds discount horizon")
+    if not 0 <= safe["critical_reset_fraction"] < 1 or not 0 < safe["curriculum_ramp_fraction"] <= 1:
+        raise ValueError("Invalid safety curriculum fractions")
+    if not (0 <= safe["critical_tilt_min_deg"] <= safe["critical_tilt_max_deg"]
+            < p["max_tilt_deg"]) or not 0 <= safe["critical_outward_rate"] <= p["rate_xy"]:
+        raise ValueError("Invalid critical attitude reset settings")
+    if reward["actuator_risk"] > 0 and not safe["predictive_enabled"]:
+        raise ValueError("actuator_risk reward needs predictive_enabled")
     for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "initialization_episodes"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError(f"Invalid training.{key}")
