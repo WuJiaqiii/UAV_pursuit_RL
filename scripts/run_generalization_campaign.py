@@ -80,9 +80,16 @@ def model_configs(parent_config, plan, variant, stage, seed, device):
         for key, value in variant.get("reward", {}).items():
             if key not in ("progress", "braking", "entry_velocity",
                            "tilt_guard", "tilt_guard_start_deg",
-                           "tilt_guard_lookahead_s"):
+                           "tilt_guard_lookahead_s", "actuator_risk"):
                 raise ValueError(f"Disallowed generalization reward override: {key}")
             config["reward"][key] = value
+        # V11 safety terms are part of the experiment fingerprint and are
+        # explicitly registered for every variant. They are NOT implicit
+        # runtime mutations, keeping campaign resume and comparisons auditable.
+        for key, value in variant.get("safety", {}).items():
+            if key not in config["safety"]:
+                raise ValueError(f"Disallowed safety override: {key}")
+            config["safety"][key] = copy.deepcopy(value)
         configurations[name] = validate(config)
     fractions = variant["mix"]
     if set(fractions) != set(configurations):
