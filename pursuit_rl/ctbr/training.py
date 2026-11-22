@@ -445,7 +445,16 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 raise ValueError(
                     "Warm start must preserve action, observations, dynamics, predictor and Critic architecture"
                 )
-            model.load_state_dict(parent.state_dict())
+            transferred = model.load_state_dict(parent.state_dict(), strict=False)
+            expected_missing = (
+                {"lagrange_multiplier"} |
+                {key for key in model.state_dict() if key.startswith("cost_critic.")}
+            ) if c["safety"]["constraint_enabled"] else set()
+            if set(transferred.missing_keys) != expected_missing or transferred.unexpected_keys:
+                raise ValueError(
+                    "Unexpected model mismatch during V11 warm start: "
+                    f"{transferred}"
+                )
             model.critic_policy_match = False
             progress["critic_needs_calibration"] = True
             progress["parent_physics_steps"] = saved["progress"]["cumulative_ppo_physics_steps"]
@@ -617,6 +626,10 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             previous.eval().requires_grad_(False)
             frozen_teachers[task] = previous
     env = training_env(c, replay, seed=c["seed"] + 7919 * progress["ppo_updates"])
+    safety_active = model.cost_critic is not None
+    cost_gamma = math.exp(-env.decision_dt / c["safety"]["discount_time_s"])
+    cost_lam = math.exp(-env.decision_dt / c["safety"]["advantage_time_s"]) / cost_gamma
+    curriculum_groups = env.groups if hasattr(env, "groups") else [env]
     if distill_coef > 0:
         missing = set(frozen_teachers) - set(env.task_slices)
         if missing:
@@ -637,6 +650,15 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         progress["physics_steps"] < tr["physics_steps"]
         and not progress["promotion_passed"]
     ):
+        # The curriculum changes only the distribution of NEW on-policy
+        # resets. Validation and heldout profiles are never modified.
+        curriculum = c["safety"]
+        progress_fraction = progress["physics_steps"] / max(tr["physics_steps"], 1)
+        critical_prob = curriculum["critical_reset_fraction"] * min(
+            1.0, progress_fraction / curriculum["curriculum_ramp_fraction"]
+        )
+        for subenv in curriculum_groups:
+            subenv.critical_reset_fraction = critical_prob
         ticks = min(
             tr["rollout_steps"],
             math.ceil(
@@ -757,6 +779,13 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 ("elapsed", env.steps.float() * env.dt),
             ]:
                 getattr(buf, name)[tick] = data
+            if safety_active:
+                buf.cost[tick] = (
+                    torch.cat([part.last_safety_cost for part in env.groups])
+                    if hasattr(env, "groups") else env.last_safety_cost
+                )
+                buf.cost_values[tick] = model.cost_values_tensor(priv)
+                buf.cost_next_values[tick] = model.cost_values_tensor(npriv)
             buf.actuator_state[tick, :, 0] = env.plant.pursuer.thrust
             buf.actuator_state[tick, :, 1:] = env.plant.pursuer.rate
             for key, data in env.reward_components.items():
@@ -778,10 +807,16 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             episode_start = term | trunc
             obs, priv = env.reset(episode_start) if completed else (nobs, npriv)
         buf.compute_gae(env.gamma, env.gae_lambda)
+        if safety_active:
+            buf.compute_cost_gae(cost_gamma, cost_lam)
         before = dict(
             model={k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
             actor_optimizer=copy.deepcopy(model.actor_optimizer.state_dict()),
             critic_optimizer=copy.deepcopy(model.critic_optimizer.state_dict()),
+            cost_optimizer=(
+                copy.deepcopy(model.cost_optimizer.state_dict())
+                if model.cost_optimizer else None
+            ),
             torch_rng=torch.get_rng_state(),
             progress=copy.deepcopy(progress),
         )
@@ -852,6 +887,17 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             successes=sum(r["success"] for r in records),
             completed_success_rate=(
                 sum(r["success"] for r in records) / len(records) if records else None
+            ),
+            completed_tilt_failure_rate=(
+                sum(r["reason"] == "tilt" for r in records) / len(records)
+                if records else None
+            ),
+            curriculum_critical_reset_fraction=critical_prob,
+            predicted_tilt_peak_mean_rad=(
+                float(torch.stack([
+                    part.last_predicted_peak.mean() for part in curriculum_groups
+                ]).mean().item())
+                if c["safety"]["predictive_enabled"] else None
             ),
             metrics={k: v for k, v in stats.items() if k != "diagnostics"},
             diagnostics=diagnostics,
