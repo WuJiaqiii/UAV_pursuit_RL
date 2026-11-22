@@ -50,6 +50,13 @@ class AsymmetricPPO(nn.Module):
         self.critic = mlp(
             feature_dim + critic_dim - obs_dim, config["hidden_critic"], 1
         )
+        self.safety_config = config.get("safety")
+        self.cost_critic = (
+            mlp(feature_dim + critic_dim - obs_dim, config["hidden_critic"], 1)
+            if self.safety_config is not None else None
+        )
+        if self.cost_critic is not None:
+            self.register_buffer("lagrange_multiplier", torch.zeros(()))
         self.value_norm = ValueNorm(
             config.get("value_norm", False),
             config.get("norm_beta", 0.995),
@@ -63,6 +70,7 @@ class AsymmetricPPO(nn.Module):
         self.actor_optimizer = None
         self.critic_optimizer = None
         self.predictor_optimizer = None
+        self.cost_optimizer = None
         if create_optimizers:
             self.actor_optimizer = torch.optim.Adam(
                 list(self.actor.parameters()) + [self.log_std], lr=config["actor_lr"]
@@ -70,6 +78,11 @@ class AsymmetricPPO(nn.Module):
             self.critic_optimizer = torch.optim.Adam(
                 self.critic.parameters(), lr=config["critic_lr"]
             )
+            if self.cost_critic is not None:
+                self.cost_optimizer = torch.optim.Adam(
+                    self.cost_critic.parameters(),
+                    lr=self.safety_config["cost_critic_lr"],
+                )
             if self.predictor is not None and self.prediction_config["mode"] == "lstm":
                 self.predictor_optimizer = torch.optim.Adam(
                     self.predictor.parameters(), lr=self.prediction_config["lr"]
@@ -96,6 +109,12 @@ class AsymmetricPPO(nn.Module):
             ),
             -1,
         )
+
+    def cost_values_tensor(self, critic_obs):
+        if self.cost_critic is None:
+            raise RuntimeError("Safety Critic is disabled")
+        with torch.no_grad():
+            return self.cost_critic(self.critic_features(critic_obs)).squeeze(-1)
 
     def critic_values(self, critic_obs):
         normalized = self.critic(self.critic_features(critic_obs)).squeeze(-1)
@@ -309,6 +328,21 @@ class AsymmetricPPO(nn.Module):
         old_lp = torch.as_tensor(buffer.logprob.reshape(-1), device=device)
         adv = torch.as_tensor(buffer.advantage.reshape(-1), device=device)
         ret = torch.as_tensor(buffer.returns.reshape(-1), device=device)
+        safety_active = self.cost_critic is not None
+        if safety_active:
+            cost_adv = buffer.cost_advantage.reshape(-1).to(device=device)
+            cost_ret = buffer.cost_returns.reshape(-1).to(device=device)
+            # Lag multiplier responds to the *on-policy*, unnormalized per-step
+            # risk cost; unlike the safety gradient, the signal is not rescaled.
+            observed_cost = float(buffer.cost.mean().item())
+            with torch.no_grad():
+                self.lagrange_multiplier.add_(
+                    self.safety_config["lagrangian_lr"] *
+                    (observed_cost - self.safety_config["cost_limit"])
+                ).clamp_(0, self.safety_config["lagrangian_max"])
+            lagrange = float(self.lagrange_multiplier.item())
+        else:
+            observed_cost, lagrange = 0.0, 0.0
         # GAE and stored values are always in reward units. Freeze target
         # statistics for every minibatch/epoch of this PPO update.
         self.update_value_statistics(ret)
@@ -341,6 +375,10 @@ class AsymmetricPPO(nn.Module):
                         "Nonfinite pre-update action log probabilities"
                     )
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+        # Cost advantage is mean-centered, deliberately NOT std-normalized:
+        # lambda therefore retains a stable interpretation in risk-cost units.
+        if safety_active:
+            cost_adv = cost_adv - cost_adv.mean()
         length = len(adv)
         stats = {
             "approx_kl": 0.0,
@@ -352,6 +390,13 @@ class AsymmetricPPO(nn.Module):
             "aux_pd_loss": 0.0,
             "aux_pd_coef": float(aux_pd_coef),
             "distill_coef": float(distill_coef),
+            "safety_enabled": bool(safety_active),
+            "safety_cost_mean": observed_cost,
+            "safety_cost_limit": (
+                float(self.safety_config["cost_limit"]) if safety_active else 0.0
+            ),
+            "lagrange_multiplier": lagrange,
+            "cost_critic_loss": 0.0,
             "distill_loss": 0.0,
             "distill_samples": int(retention_mask.sum().item()) if retention_mask is not None else 0,
             "actor_total_loss": 0.0,
@@ -389,9 +434,12 @@ class AsymmetricPPO(nn.Module):
                     stop = True
                     if not c.get("separate_critic_updates", False):
                         break
+                policy_adv = adv[ids]
+                if safety_active:
+                    policy_adv = policy_adv - lagrange * cost_adv[ids]
                 pg_loss = -torch.minimum(
-                    ratio * adv[ids],
-                    torch.clamp(ratio, 1 - c["clip"], 1 + c["clip"]) * adv[ids],
+                    ratio * policy_adv,
+                    torch.clamp(ratio, 1 - c["clip"], 1 + c["clip"]) * policy_adv,
                 ).mean()
                 # Gaussian raw entropy is a proxy; squashed entropy differs.
                 ent = (0.5 + math.log(2 * math.pi) / 2 + self.log_std).sum()
@@ -469,6 +517,19 @@ class AsymmetricPPO(nn.Module):
                     error_if_nonfinite=guard,
                 )
                 self.critic_optimizer.step()
+                if safety_active:
+                    self.cost_optimizer.zero_grad(set_to_none=True)
+                    predicted_cost = self.cost_critic(pr[ids]).squeeze(-1)
+                    cost_loss = F.smooth_l1_loss(predicted_cost, cost_ret[ids])
+                    if guard and not bool(torch.isfinite(cost_loss).item()):
+                        raise FloatingPointError("Nonfinite safety critic loss")
+                    cost_loss.backward()
+                    nn.utils.clip_grad_norm_(
+                        self.cost_critic.parameters(), c["max_grad_norm"],
+                        error_if_nonfinite=guard,
+                    )
+                    self.cost_optimizer.step()
+                    stats["cost_critic_loss"] += float(cost_loss.detach().item())
                 if c.get("separate_critic_updates", False):
                     stats["critic_minibatches"] += 1
                 stats["approx_kl"] += approx_kl
@@ -497,6 +558,7 @@ class AsymmetricPPO(nn.Module):
             "aux_pd_loss",
             "distill_loss",
             "critic_loss",
+            "cost_critic_loss",
             "entropy_proxy",
             "actor_total_loss",
             "actor_grad_norm",
