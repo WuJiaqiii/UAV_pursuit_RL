@@ -66,7 +66,7 @@ def test_prediction_uses_current_rate_and_actuator_lag():
     env = CTBRBatch(c)
     from pursuit_rl.simulation.rigid_body import exp_so3
     tilt = torch.zeros(env.n, 3)
-    tilt[:, 0] = math.radians(50)
+    tilt[:, 0] = math.radians(54)
     env.plant.pursuer.rot[:] = exp_so3(tilt)
     action = torch.zeros(env.n, 4)
     env.plant.pursuer.rate[:, 0] = 1.0
