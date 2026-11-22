@@ -160,3 +160,24 @@ def test_campaign_ablation_is_matched():
     assert not arms["v11a_predictive_reward"]["safety"]["constraint_enabled"]
     assert arms["v11b_constrained_ppo"]["safety"]["constraint_enabled"]
     assert arms["v11c_constrained_curriculum"]["safety"]["critical_reset_fraction"] > 0
+
+
+
+def test_recovery_probe_has_identical_start_states_for_ppo_and_pd():
+    from scripts.run_v11_recovery_probe import rollout
+    c = tiny(False)
+    c["task"]["duration"] = 0.03
+    c["training"]["teacher_method"] = "pd_observed"
+    validate(c)
+    model = new_model(c, optimizers=False)
+    actor, actor_init = rollout(
+        model, c, total=4, batch_size=4, seed=511,
+        critical_fraction=0.5, reference=False,
+    )
+    expert, expert_init = rollout(
+        model, c, total=4, batch_size=4, seed=511,
+        critical_fraction=0.5, reference=True,
+    )
+    assert actor_init == expert_init
+    assert len(actor) == len(expert) == 4
+    assert all(0 <= item["maximum_tilt_deg"] <= 70 for item in actor)
