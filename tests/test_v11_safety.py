@@ -181,3 +181,20 @@ def test_recovery_probe_has_identical_start_states_for_ppo_and_pd():
     assert actor_init == expert_init
     assert len(actor) == len(expert) == 4
     assert all(0 <= item["maximum_tilt_deg"] <= 70 for item in actor)
+
+
+
+def test_constrained_warm_start_from_unconstrained_checkpoint(tmp_path):
+    old = tiny(False)
+    parent = tmp_path / "parent.pt"
+    save(parent, new_model(old, optimizers=False), old, {
+        "physics_steps": 0, "ppo_updates": 0,
+        "cumulative_ppo_physics_steps": 0,
+    }, "legacy")
+    c = tiny(True)
+    train(c, tmp_path / "warm", init_from=parent)
+    restored, cfg, _ = load_checkpoint(
+        tmp_path / "warm/checkpoints/latest.pt", device="cpu", optimizers=True
+    )
+    assert cfg["safety"]["constraint_enabled"]
+    assert restored.cost_critic is not None
