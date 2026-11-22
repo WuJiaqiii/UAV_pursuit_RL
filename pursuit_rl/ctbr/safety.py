@@ -12,7 +12,7 @@ from pursuit_rl.simulation.rigid_body import exp_so3
 
 
 @torch.no_grad()
-def predict_attitude_risk(env, action):
+def predict_attitude_risk(env, action, step_s=None):
     """Return (risk[N] in [0, 1], peak_tilt_rad[N], margin_rad[N]).
 
     Reproduces the BodyBatch rate lag: rate += (cmd-rate)*(1-exp(-h/tau)).
@@ -24,7 +24,9 @@ def predict_attitude_risk(env, action):
     """
     cfg = env.config["safety"]
     p = env.config["physics"]
-    h = float(cfg["prediction_step_s"])
+    h = float(cfg["prediction_step_s"] if step_s is None else step_s)
+    if h <= 0 or abs(round(env.decision_dt / h) * h - env.decision_dt) > 1e-9:
+        raise ValueError("Prediction step must divide CTBR decision period")
     interval = env.decision_dt
     horizon = float(cfg["horizon_s"])
     count = int(round(horizon / h))
@@ -38,10 +40,11 @@ def predict_attitude_risk(env, action):
     peak = torch.acos(rot[:, 2, 2].clamp(-1, 1))
     decay = (1.0 - torch.exp(-h / tau)).unsqueeze(1)
     gain = float(cfg["recovery_rate_gain"])
+    cmd = first
     for k in range(count):
         if k < first_ticks:
             cmd = first
-        else:
+        elif k % first_ticks == 0:
             # dR33/dt = R[2,0]*wy - R[2,1]*wx;
             # choosing wx < 0 when R[2,1]>0 and wy > 0 when
             # R[2,0]>0 increases R33, recovering toward the level set.
