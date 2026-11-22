@@ -261,11 +261,14 @@ def validate(c):
         raise ValueError("Invalid safety enable flags")
     if safe["constraint_enabled"] and not safe["predictive_enabled"]:
         raise ValueError("Constrained PPO needs the action-aware risk predictor")
-    if (safe["horizon_s"] < dt or safe["prediction_step_s"] <= 0
-            or abs(round(safe["horizon_s"] / safe["prediction_step_s"])
-                   * safe["prediction_step_s"] - safe["horizon_s"]) > 1e-9
-            or abs(round(dt / safe["prediction_step_s"])
-                   * safe["prediction_step_s"] - dt) > 1e-9):
+    if (safe["prediction_step_s"] <= 0
+            or (safe["predictive_enabled"] and (
+                safe["horizon_s"] < dt
+                or abs(round(safe["horizon_s"] / safe["prediction_step_s"])
+                       * safe["prediction_step_s"] - safe["horizon_s"]) > 1e-9
+                or abs(round(dt / safe["prediction_step_s"])
+                       * safe["prediction_step_s"] - dt) > 1e-9
+            ))):
         raise ValueError("Safety prediction step must divide decision and horizon durations")
     if (not 0 <= safe["warning_deg"] < p["max_tilt_deg"]
             or not 0 <= safe["uncertainty_deg"] < 20
