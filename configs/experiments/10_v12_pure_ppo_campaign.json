@@ -1,0 +1,43 @@
+{
+  "schema": "v12-pure-ppo-campaign-v1",
+  "description": "V12 fast diagnostic campaign: four independent from-scratch direct CTBR PPO tasks; overall progress weighted by PPO physics steps. Quick budgets diagnose learning, not guaranteed convergence.",
+  "defaults": {
+    "preset": "quick",
+    "num_envs": 64,
+    "rollout_steps": 128,
+    "batch_size": 512,
+    "epochs": 2,
+    "history_steps": 1,
+    "legacy_terminal_records": false
+  },
+  "stages": [
+    {
+      "name": "Stage 1 · Static",
+      "task": "static",
+      "seeds": [
+        42
+      ]
+    },
+    {
+      "name": "Stage 2 · Low Tail",
+      "task": "tail",
+      "seeds": [
+        42
+      ]
+    },
+    {
+      "name": "Stage 3 · Low Head-on",
+      "task": "head_on",
+      "seeds": [
+        42
+      ]
+    },
+    {
+      "name": "Stage 4 · Low Random",
+      "task": "random",
+      "seeds": [
+        42
+      ]
+    }
+  ]
+}
