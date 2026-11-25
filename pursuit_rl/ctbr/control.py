@@ -83,7 +83,12 @@ def observed_pd(env, smooth=False):
     """
     obs, _ = env.observe()
     p, tr = env.config["physics"], env.config["training"]
-    r, v = obs[:, :3] * 100.0, obs[:, 3:6] * 50.0
+    policy = env.config["policy"]
+    position = obs[:, :3]
+    if policy["relative_position_encoding"] == "asinh":
+        position = torch.sinh(position)
+    r = position * policy["relative_position_scale_m"]
+    v = obs[:, 3:6] * policy["relative_velocity_scale_mps"]
     a_target, velocity = obs[:, 6:9] * 7.0, obs[:, 9:12] * 50.0
     rot = obs[:, 12:21].reshape(-1, 3, 3)
     acc = limit(2.0 * r + 2.5 * v + a_target,
