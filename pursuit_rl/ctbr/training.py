@@ -342,6 +342,21 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset,
     return origin, report
 
 
+def initialize_fresh_actor(model, tr):
+    """Reproducible PPO-only actor initialization; never uses teacher actions."""
+    with torch.no_grad():
+        if tr["actor_initialization"] == "small_gain":
+            torch.nn.init.orthogonal_(model.actor[-1].weight, gain=0.02)
+            model.actor[-1].bias.zero_()
+        elif tr["actor_initialization"] == "legacy":
+            model.actor[0].weight[:, 21:] = 0
+            if tr.get("zero_initial_actor_mean", False):
+                model.actor[-1].weight.zero_()
+                model.actor[-1].bias.zero_()
+        else:
+            raise ValueError("Unknown pure PPO Actor initialization")
+
+
 def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None,
           run_manifest=None, bc_profiles=None, distillation=None,
           validation_profiles=None, show_progress=True):
@@ -503,22 +518,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         else:
             origin = "random_initial"
             # The teacher uses only current kinematics (first 21 features).
-            with torch.no_grad():
-                if tr["actor_initialization"] == "small_gain":
-                    # A zero output head blocks gradients to ALL preceding
-                    # actor layers on the first PPO update. Retain meaningful
-                    # body-rate, thrust and action-history features from the
-                    # first update while staying near the neutral CTBR command.
-                    torch.nn.init.orthogonal_(
-                        model.actor[-1].weight, gain=0.02
-                    )
-                    model.actor[-1].bias.zero_()
-                else:
-                    # Strictly historical initialization for ablations.
-                    model.actor[0].weight[:, 21:] = 0
-                    if tr.get("zero_initial_actor_mean", False):
-                        model.actor[-1].weight.zero_()
-                        model.actor[-1].bias.zero_()
+            initialize_fresh_actor(model, tr)
             emit(
                 root, "actor_initialization",
                 mode=tr["actor_initialization"],
