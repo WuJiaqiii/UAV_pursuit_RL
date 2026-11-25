@@ -142,7 +142,7 @@ def load(path, device=None, optimizers=False):
         "training": (
             "bc_rounds", "aux_pd_coef", "checkpoint_every_updates",
             "fast_terminal_records", "skip_mc_diagnostics",
-            "checkpoint_selection",
+            "checkpoint_selection", "actor_initialization",
         ),
         "policy": (
             "relative_position_mode", "relative_position_scale_m",
