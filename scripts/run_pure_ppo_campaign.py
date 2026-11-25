@@ -44,6 +44,7 @@ DEFAULT_PLAN = "configs/experiments/10_v12_pure_ppo_campaign.json"
 DEFAULTS_KEYS = frozenset((
     "preset", "num_envs", "rollout_steps", "batch_size",
     "epochs", "history_steps", "legacy_terminal_records",
+    "pursuit_v13",
 ))
 STAGE_KEYS = frozenset(("name", "task", "seeds", "preset", "physics_steps"))
 PROGRESS_SCHEMA = "v12-pure-ppo-campaign-progress-v1"
@@ -115,6 +116,7 @@ def expand_plan(plan, device):
                 history_steps=defaults.get("history_steps"),
                 physics_steps=budget,
                 legacy_terminal_records=defaults.get("legacy_terminal_records", False),
+                pursuit_v13=defaults.get("pursuit_v13", False),
             )
             config = make_config(args)
             index = len(runs) + 1
@@ -313,6 +315,8 @@ def run_command(item, directory, device, resume_checkpoint=None):
     ]
     if config["training"]["fast_terminal_records"] is False:
         command.append("--legacy-terminal-records")
+    if config["training"]["selection_mode"] == "distance_first":
+        command.append("--pursuit-v13")
     return command
 
 
