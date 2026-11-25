@@ -139,10 +139,14 @@ def test_checkpoint_pursuit_progress_prioritizes_closure_with_risk_penalty():
     )
     # Approximate the actual C7 validation: old selection preferred
     # 96.9% safe timeout despite the normalized closest approach worsening.
-    more_closure = _report(8.15, 0.25)
+    more_closure = _report(7.9, 0.25)
     safe_timeout = _report(8.32, 1.0)
     assert score(more_closure, mode="pursuit_progress") > score(
         safe_timeout, mode="pursuit_progress"
+    )
+    assert improved(
+        more_closure, score(safe_timeout, mode="pursuit_progress"),
+        mode="pursuit_progress",
     )
 
 
