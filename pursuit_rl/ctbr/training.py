@@ -1138,9 +1138,9 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                         tuple(candidate_score) > tuple(progress["initial_score"])
                         if validation_profiles
                         else improved(
-                        report, progress["initial_score"],
-                        mode=tr["checkpoint_selection"],
-                    )
+                            report, progress["initial_score"],
+                            mode=tr["checkpoint_selection"],
+                        )
                     )
                     save(ckpt / "best_feasible.pt", model, c, progress, "ppo")
             next_validation = (
