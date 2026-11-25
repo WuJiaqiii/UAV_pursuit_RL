@@ -18,6 +18,7 @@ from pursuit_rl.ctbr.training import train
 
 
 TASKS = {
+    "near_static": "configs/first_entry_highspeed/00_near_static.json",
     "static": "configs/first_entry_highspeed/01_static.json",
     "tail": "configs/first_entry_highspeed/02_low_tail.json",
     "head_on": "configs/first_entry_highspeed/03_low_head_on.json",
@@ -49,9 +50,26 @@ def make_config(args):
     c["policy"]["history_steps"] = (
         args.history_steps if args.history_steps is not None else 1
     )
-    c["policy"]["initial_std"] = 0.15
+    c["policy"]["initial_std"] = (
+        args.initial_std if getattr(args, "initial_std", None) is not None else 0.15
+    )
+    if getattr(args, "exploration_time_s", None) is not None:
+        c["policy"]["exploration_time_s"] = args.exploration_time_s
     c["policy"]["min_std"] = 0.02
     c["policy"]["max_std"] = 0.3
+    overrides = (
+        ("relative_position_mode", "policy", "relative_position_mode"),
+        ("relative_position_scale_m", "policy", "relative_position_scale_m"),
+        ("relative_velocity_scale_mps", "policy", "relative_velocity_scale_mps"),
+        ("progress_mode", "reward", "progress_mode"),
+        ("progress_distance_floor_m", "reward", "progress_distance_floor_m"),
+        ("checkpoint_selection", "training", "checkpoint_selection"),
+        ("actor_initialization", "training", "actor_initialization"),
+    )
+    for argument, section, key in overrides:
+        value = getattr(args, argument, None)
+        if value is not None:
+            c[section][key] = value
     # No temporal predictor, feature network or supervised predictor fit.
     c["prediction"]["enabled"] = False
     c["safety"]["predictive_enabled"] = False
@@ -108,6 +126,18 @@ def main(argv=None):
     ap.add_argument("--batch-size", type=int)
     ap.add_argument("--epochs", type=int)
     ap.add_argument("--history-steps", type=int)
+    ap.add_argument("--relative-position-mode", choices=("linear", "asinh"))
+    ap.add_argument("--initial-std", type=float)
+    ap.add_argument("--exploration-time-s", type=float)
+    ap.add_argument("--relative-position-scale-m", type=float)
+    ap.add_argument("--relative-velocity-scale-mps", type=float)
+    ap.add_argument("--progress-mode", choices=(
+        "legacy_saturating", "relative_distance_normalized",
+        "pursuer_closure_normalized",
+    ))
+    ap.add_argument("--progress-distance-floor-m", type=float)
+    ap.add_argument("--checkpoint-selection", choices=("legacy", "pursuit_progress"))
+    ap.add_argument("--actor-initialization", choices=("legacy", "small_gain"))
     ap.add_argument("--physics-steps", type=int)
     ap.add_argument("--init-from")
     ap.add_argument("--resume")
@@ -123,6 +153,11 @@ def main(argv=None):
         if any(v is not None for v in (
             args.num_envs, args.rollout_steps,
             args.batch_size, args.epochs, args.history_steps,
+            args.relative_position_mode, args.relative_position_scale_m,
+            args.relative_velocity_scale_mps, args.initial_std,
+            args.exploration_time_s, args.progress_mode,
+            args.progress_distance_floor_m, args.checkpoint_selection,
+            args.actor_initialization,
         )) or args.legacy_terminal_records:
             ap.error("Resume locks task, parallelism and algorithm hyperparameters")
         _, c, _ = load_checkpoint(args.resume, device=args.device)
@@ -163,6 +198,10 @@ def main(argv=None):
             minibatch=c["training"]["batch_size"],
             epochs=c["training"]["epochs"],
             fast_terminal_records=c["training"]["fast_terminal_records"],
+            checkpoint_selection=c["training"]["checkpoint_selection"],
+            actor_initialization=c["training"]["actor_initialization"],
+            progress_mode=c["reward"]["progress_mode"],
+            relative_position_mode=c["policy"]["relative_position_mode"],
         ), indent=2, ensure_ascii=False))
         return None
     root = Path(args.out)

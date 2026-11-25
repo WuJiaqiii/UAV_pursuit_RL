@@ -139,9 +139,20 @@ def load(path, device=None, optimizers=False):
     if "safety" not in data["config"]:
         legacy_config.pop("safety", None)
     for section, keys in {
-        "training": ("bc_rounds", "aux_pd_coef", "checkpoint_every_updates", "fast_terminal_records", "skip_mc_diagnostics"),
-        "reward": ("tilt_guard", "tilt_guard_start_deg",
-                   "tilt_guard_lookahead_s", "actuator_risk"),
+        "training": (
+            "bc_rounds", "aux_pd_coef", "checkpoint_every_updates",
+            "fast_terminal_records", "skip_mc_diagnostics",
+            "checkpoint_selection", "actor_initialization",
+        ),
+        "policy": (
+            "relative_position_mode", "relative_position_scale_m",
+            "relative_velocity_scale_mps",
+        ),
+        "reward": (
+            "tilt_guard", "tilt_guard_start_deg",
+            "tilt_guard_lookahead_s", "actuator_risk",
+            "progress_mode", "progress_distance_floor_m",
+        ),
     }.items():
         original_section = data["config"].get(section, {})
         for key in keys:

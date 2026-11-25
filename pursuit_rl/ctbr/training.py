@@ -342,6 +342,21 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset,
     return origin, report
 
 
+def initialize_fresh_actor(model, tr):
+    """Reproducible PPO-only actor initialization; never uses teacher actions."""
+    with torch.no_grad():
+        if tr["actor_initialization"] == "small_gain":
+            torch.nn.init.orthogonal_(model.actor[-1].weight, gain=0.02)
+            model.actor[-1].bias.zero_()
+        elif tr["actor_initialization"] == "legacy":
+            model.actor[0].weight[:, 21:] = 0
+            if tr.get("zero_initial_actor_mean", False):
+                model.actor[-1].weight.zero_()
+                model.actor[-1].bias.zero_()
+        else:
+            raise ValueError("Unknown pure PPO Actor initialization")
+
+
 def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None,
           run_manifest=None, bc_profiles=None, distillation=None,
           validation_profiles=None, show_progress=True):
@@ -503,11 +518,14 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         else:
             origin = "random_initial"
             # The teacher uses only current kinematics (first 21 features).
-            with torch.no_grad():
-                model.actor[0].weight[:, 21:] = 0
-                if tr.get("zero_initial_actor_mean", False):
-                    model.actor[-1].weight.zero_()
-                    model.actor[-1].bias.zero_()
+            initialize_fresh_actor(model, tr)
+            emit(
+                root, "actor_initialization",
+                mode=tr["actor_initialization"],
+                output_layer_gain=(
+                    0.02 if tr["actor_initialization"] == "small_gain" else 0.0
+                ),
+            )
             if tr["bc_updates"]:
                 origin, bc_report = run_bc_initialization(
                     c, model, root, ckpt, progress, transfer=False,
@@ -605,7 +623,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             progress["validation_physics_steps"] += extra_steps
             initial_score = joint["selection_score"]
         else:
-            initial_score = list(score(initial))
+            initial_score = list(score(initial, mode=tr["checkpoint_selection"]))
         progress["best_score"] = list(initial_score)
         progress["initial_score"] = list(initial_score)
         progress["best_origin"] = origin
@@ -1079,15 +1097,25 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     task_results=joint["tasks"],
                 )
             else:
-                candidate_score = list(score(report))
+                candidate_score = list(score(report, mode=tr["checkpoint_selection"]))
                 candidate_feasible = passed(report, c)
-            if tuple(candidate_score) > tuple(progress["best_score"]):
+            if (
+                tuple(candidate_score) > tuple(progress["best_score"])
+                if validation_profiles
+                else improved(
+                    report, progress["best_score"],
+                    mode=tr["checkpoint_selection"],
+                )
+            ):
                 progress["best_score"] = list(candidate_score)
                 progress["best_origin"] = "ppo"
                 progress["selected_improved_over_initial"] = (
                     tuple(candidate_score) > tuple(progress["initial_score"])
                     if validation_profiles
-                    else improved(report, progress["initial_score"])
+                    else improved(
+                        report, progress["initial_score"],
+                        mode=tr["checkpoint_selection"],
+                    )
                 )
                 save(ckpt / "best.pt", model, c, progress, "ppo")
                 save(ckpt / "best_current.pt", model, c, progress, "ppo")
@@ -1099,14 +1127,20 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 if progress["best_feasible_score"] is None or (
                     tuple(candidate_score) > tuple(progress["best_feasible_score"])
                     if validation_profiles
-                    else improved(report, progress["best_feasible_score"])
+                    else improved(
+                        report, progress["best_feasible_score"],
+                        mode=tr["checkpoint_selection"],
+                    )
                 ):
                     progress["best_feasible_score"] = list(candidate_score)
                     progress["best_feasible_origin"] = "ppo"
                     progress["best_feasible_improved_over_initial"] = (
                         tuple(candidate_score) > tuple(progress["initial_score"])
                         if validation_profiles
-                        else improved(report, progress["initial_score"])
+                        else improved(
+                            report, progress["initial_score"],
+                            mode=tr["checkpoint_selection"],
+                        )
                     )
                     save(ckpt / "best_feasible.pt", model, c, progress, "ppo")
             next_validation = (

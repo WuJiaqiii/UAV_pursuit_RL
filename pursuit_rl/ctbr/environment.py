@@ -373,10 +373,17 @@ class CTBRBatch:
         goals = u.pos.new_tensor(
             [c["radius"] / 5.0, c["entry_relative_speed_max_mps"] / 15.0]
         ).expand(self.n, 2)
+        policy_cfg = self.config["policy"]
+        relative_position = (t.pos - u.pos).float()
+        position_scale = policy_cfg["relative_position_scale_m"]
+        if policy_cfg["relative_position_mode"] == "asinh":
+            relative_position = torch.asinh(relative_position / position_scale)
+        else:
+            relative_position = relative_position / position_scale
         obs = torch.cat(
             (
-                (t.pos - u.pos) / 100.0,
-                (t.vel - u.vel) / 50.0,
+                relative_position,
+                (t.vel - u.vel) / policy_cfg["relative_velocity_scale_mps"],
                 t.acc / 7.0,
                 u.vel / 50.0,
                 u.rot.flatten(1),
@@ -580,6 +587,14 @@ class CTBRBatch:
         u, t = self.plant.pursuer, self.plant.target
         old_relative = (t.pos - u.pos).float().clone()
         previous = norm(old_relative).float()
+        # The counterfactual "pursuer stationary during this physics step"
+        # removes free reward from a head-on target that flies towards us.
+        mode = r["progress_mode"]
+        old_pursuer = (
+            u.pos.clone()
+            if mode == "pursuer_closure_normalized"
+            else None
+        )
         old_acc = t.acc.clone()
         self.plant.step(action, active)
         self.advance_target(active)
@@ -649,9 +664,26 @@ class CTBRBatch:
                 ),
             )
         length = c["entry_velocity_distance_m"]
-        progress_reward = r["progress"] * (
-            previous / (previous + length) - distance / (distance + length)
-        )
+        if mode == "legacy_saturating":
+            progress_reward = r["progress"] * (
+                previous / (previous + length) - distance / (distance + length)
+            )
+        else:
+            episode_scale = norm(self.initial_rel_pos).clamp_min(
+                r["progress_distance_floor_m"]
+            )
+            if mode == "pursuer_closure_normalized":
+                # The target may move towards the pursuer without any
+                # commanded pursuit. Credit only the pursuer's incremental
+                # displacement along the line of sight at the new target
+                # position. Positive = active closing; negative = moving away.
+                without_pursuer_movement = norm(
+                    (t.pos - old_pursuer).float()
+                )
+                closing_increment = without_pursuer_movement - distance
+            else:
+                closing_increment = previous - distance
+            progress_reward = r["progress"] * closing_increment / episode_scale
         closing_speed = (
             -((t.vel - u.vel).float() * new_relative).sum(1)
             / distance.clamp_min(1e-6)
