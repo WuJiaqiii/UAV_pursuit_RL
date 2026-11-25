@@ -37,6 +37,15 @@ The exploratory action correlation time was 20ms, shorter than the
 are filtered by actuator lags unless sustained coherently. Stable
 hover from the zero-mean Actor produces little useful pursuit experience.
 
+A replay of the original validation JSON shows that at about 1.06M
+physics steps on C0, a candidate PPO policy reduced mean closest range
+from 3.348m (the selected random initial model) to 2.691m, but suffered
+12/32 tilt failures and 20/32 timeouts. Legacy selection discarded that
+candidate in favor of 32/32 safe timeouts and *zero* closure. That is a
+concrete checkpoint-selection pathology, but not a successful or safe
+pursuit controller. More active checkpoint selection may trade additional
+tilt/outside failures for range progress; always inspect both metrics.
+
 PPO critic explained variance near one does not imply control mastery:
 a Critic can accurately learn to forecast a consistent timeout penalty.
 The inherited three-second GAE advantage horizon also makes multi-second
