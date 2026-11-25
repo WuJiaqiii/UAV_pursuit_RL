@@ -175,8 +175,18 @@ def load(path, device=None, optimizers=False):
     if device is not None:
         c["device"] = device
     model = new_model(c, optimizers)
-    if model.config != data["model_config"]:
-        raise ValueError("Checkpoint model architecture mismatch")
+    original_model_config = copy.deepcopy(data["model_config"])
+    comparison = copy.deepcopy(model.config)
+    # V8–V12 stored an otherwise identical MLP without explicit observation
+    # encoding metadata. Permit only the exact old defaults for missing keys.
+    for key, old_value in (
+        ("relative_position_scale_m", 100.0),
+        ("relative_position_encoding", "linear"),
+    ):
+        if key not in original_model_config and comparison.get(key) == old_value:
+            comparison.pop(key)
+    if comparison != original_model_config:
+        raise ValueError("Checkpoint model architecture or observation semantics mismatch")
     model.load_state_dict(data["model"])
     model.critic_policy_match = not data["progress"].get(
         "critic_needs_calibration", False
