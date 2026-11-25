@@ -139,7 +139,7 @@ def load(path, device=None, optimizers=False):
     if "safety" not in data["config"]:
         legacy_config.pop("safety", None)
     for section, keys in {
-        "training": ("bc_rounds", "aux_pd_coef"),
+        "training": ("bc_rounds", "aux_pd_coef", "checkpoint_every_updates", "fast_terminal_records"),
         "reward": ("tilt_guard", "tilt_guard_start_deg",
                    "tilt_guard_lookahead_s", "actuator_risk"),
     }.items():
