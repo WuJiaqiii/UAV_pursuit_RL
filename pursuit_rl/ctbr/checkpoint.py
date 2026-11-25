@@ -26,6 +26,8 @@ def model_config(c):
     cfg = dict(
         action_dim=4,
         position_error_cap_m=p["position_error_cap_m"],
+        relative_position_scale_m=p["relative_position_scale_m"],
+        relative_position_encoding=p["relative_position_encoding"],
         hidden_actor=p["hidden_actor"],
         hidden_critic=p["hidden_critic"],
         log_std_init=math.log(p["initial_std"]),
@@ -139,9 +141,11 @@ def load(path, device=None, optimizers=False):
     if "safety" not in data["config"]:
         legacy_config.pop("safety", None)
     for section, keys in {
-        "training": ("bc_rounds", "aux_pd_coef", "checkpoint_every_updates", "fast_terminal_records", "skip_mc_diagnostics"),
+        "training": ("bc_rounds", "aux_pd_coef", "checkpoint_every_updates", "fast_terminal_records", "skip_mc_diagnostics", "selection_mode"),
+        "policy": ("relative_position_scale_m", "relative_velocity_scale_mps",
+                   "relative_position_encoding"),
         "reward": ("tilt_guard", "tilt_guard_start_deg",
-                   "tilt_guard_lookahead_s", "actuator_risk"),
+                   "tilt_guard_lookahead_s", "actuator_risk", "progress_mode"),
     }.items():
         original_section = data["config"].get(section, {})
         for key in keys:
