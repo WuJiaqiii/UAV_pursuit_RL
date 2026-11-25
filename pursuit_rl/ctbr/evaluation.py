@@ -272,20 +272,63 @@ def evaluate(
     return report, data
 
 
-def score(report):
+def score(report, mode="legacy"):
+    """Select PPO checkpoints using an explicit, reproducible objective.
+
+    Legacy sorting prefers an episode's *timeout* over a physically failed
+    attempt even when the latter got considerably closer to a target. Keep
+    that mode unchanged for historical results.
+
+    In pursuit_progress mode, prioritize true successes, then normalized
+    minimum range reduction with an explicit safety penalty, rather than
+    safe waiting alone. A failure to engage is not a useful interception
+    policy. This score changes MODEL SELECTION, not the PPO reward.
+    """
     records = report["episodes_detail"]
+    if not records:
+        raise ValueError("Checkpoint scoring needs completed episodes")
     safe_fraction = sum(
         r["reason"] in ("success", "timeout") for r in records
     ) / len(records)
-    if report["successes"]:
-        error = report["mean_entry_time_s"]
-    else:
-        error = report["mean_minimum_distance_m"]
-    return (report["success_rate"], safe_fraction, -error)
+    if mode == "legacy":
+        if report["successes"]:
+            error = report["mean_entry_time_s"]
+        else:
+            error = report["mean_minimum_distance_m"]
+        return (report["success_rate"], safe_fraction, -error)
+    if mode != "pursuit_progress":
+        raise ValueError(f"Unknown checkpoint score mode: {mode}")
+    progress = 0.0
+    for rec in records:
+        r0 = rec.get("start_rel_pos")
+        if r0 is None:
+            raise ValueError(
+                "pursuit_progress needs heldout start_rel_pos in every episode"
+            )
+        initial_distance = math.sqrt(sum(float(v)**2 for v in r0))
+        denominator = max(initial_distance, 1.0)
+        progress += (
+            initial_distance - float(rec["minimum_distance"])
+        ) / denominator
+    normalized_closure = progress / len(records)
+    hard_failure = 1.0 - safe_fraction
+    # Moderate risk penalty; safety still matters, but cannot beat
+    # substantial pursuit progress merely by timing out in place.
+    proxy = normalized_closure - 0.35 * hard_failure
+    return (report["success_rate"], proxy, safe_fraction)
 
 
-def improved(report, best):
-    candidate = score(report)
+def improved(report, best, mode="legacy"):
+    candidate = score(report, mode=mode)
+    if mode == "pursuit_progress":
+        if candidate[0] != best[0]:
+            return candidate[0] > best[0]
+        # Ignore tiny numerical differences in fractional range reduction.
+        if candidate[1] > best[1] + 0.01:
+            return True
+        return abs(candidate[1] - best[1]) <= 0.01 and (
+            candidate[2] > best[2] + 0.05
+        )
     if candidate[:2] != tuple(best[:2]):
         return candidate[:2] > tuple(best[:2])
     return candidate[2] - best[2] > max(0.01, 0.01 * abs(best[2]))
