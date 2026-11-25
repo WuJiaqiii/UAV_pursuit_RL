@@ -136,8 +136,10 @@ def main(argv=None):
         c = make_config(args)
     if args.init_from:
         _, pc, _ = load_checkpoint(args.init_from, device=args.device)
-        if (pc["prediction"]["enabled"] or pc["safety"]["constraint_enabled"]
-                or pc["training"]["bc_updates"] > 0):
+        if (pc["prediction"]["enabled"] or pc["safety"]["predictive_enabled"]
+                or pc["safety"]["constraint_enabled"]
+                or pc["training"]["bc_updates"] > 0
+                or pc["training"]["aux_pd_coef"] > 0):
             raise ValueError("--init-from requires a pure-PPO, no-predictor checkpoint")
     if args.dry_run:
         print(json.dumps(dict(
