@@ -105,6 +105,7 @@ def main(argv=None):
     ap.add_argument("--cpu-threads", type=int, default=1)
     ap.add_argument("--legacy-terminal-records", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-progress", action="store_true", help="Disable live progress display")
     args = ap.parse_args(argv)
     if args.init_from and args.resume:
         ap.error("--init-from and --resume are mutually exclusive")
@@ -161,6 +162,7 @@ def main(argv=None):
         c, root, resume=args.resume, init_from=args.init_from,
         replay=None, promotion_check=None, run_manifest=None,
         bc_profiles=None, distillation=None, validation_profiles=None,
+        show_progress=not args.no_progress,
     )
     elapsed = time.perf_counter() - start
     best = root / "checkpoints/best_current.pt"
