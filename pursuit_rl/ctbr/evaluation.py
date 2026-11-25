@@ -322,9 +322,11 @@ def score(report, mode="legacy"):
         ) / denominator
     normalized_closure = progress / len(records)
     hard_failure = 1.0 - safe_fraction
-    # Moderate risk penalty; safety still matters, but cannot beat
-    # substantial pursuit progress merely by timing out in place.
-    proxy = normalized_closure - 0.35 * hard_failure
+    # Give physical failures a small deduction, but do not allow the
+    # "safe timeout" fraction to erase even modest improvements in actual
+    # range closure (the historical high-random failure mode).
+    # Actual successes remain the primary selection key.
+    proxy = normalized_closure - 0.02 * hard_failure
     return (report["success_rate"], proxy, safe_fraction)
 
 
