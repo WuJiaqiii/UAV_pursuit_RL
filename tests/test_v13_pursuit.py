@@ -148,3 +148,44 @@ def test_v13_checkpoint_keeps_observation_units_on_reload(tmp_path):
     assert loaded["policy"]["relative_position_scale_m"] == 5.0
     assert restored.relative_position_encoding == "asinh"
     assert restored.relative_position_scale_m == pytest.approx(5.0)
+
+
+def test_reversing_relative_motion_reverses_dense_pursuit_progress():
+    # Reward shaping must encourage *closing*, not mere action activity.
+    values = []
+    for velocity in (+1., -1.):
+        env = CTBRBatch(config(), n=1, seed=14)
+        p, t = env.plant.pursuer, env.plant.target
+        p.pos[0] = t.pos[0].float() - torch.tensor([2., 0., 0.])
+        p.vel[0] = torch.tensor([velocity, 0., 0.])
+        env.initial_rel_pos[0] = t.pos[0].float() - p.pos[0]
+        env.minimum_distance[0] = 2.
+        env.step(torch.zeros(1, 4))
+        values.append(env.reward_components["progress"].item())
+    assert values[0] > 0 > values[1]
+
+
+def test_legacy_policy_checkpoint_without_new_option_keys_loads(tmp_path):
+    # Exact legacy semantics remain supported; no silent renormalization.
+    from pursuit_rl.ctbr.config import fingerprint, interface
+    cfg = config(v13=False)
+    model = new_model(cfg, optimizers=False)
+    path = tmp_path / "legacy.pt"
+    save(path, model, cfg, dict(critic_needs_calibration=False), "random_initial")
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    for key in ("relative_position_scale_m",
+                "relative_velocity_scale_mps",
+                "relative_position_encoding", "relative_frame"):
+        data["config"]["policy"].pop(key)
+    data["config"]["reward"].pop("progress_mode")
+    data["config"]["training"].pop("selection_mode")
+    for key in ("relative_position_scale_m",
+                "relative_position_encoding", "relative_frame"):
+        data["model_config"].pop(key)
+    data["fingerprint"] = fingerprint(data["config"])
+    data["interface"] = interface(data["config"])
+    torch.save(data, path)
+    restored, old, _ = load_checkpoint(path, device="cpu")
+    assert old["policy"]["relative_frame"] == "world"
+    assert restored.relative_position_encoding == "linear"
+    assert old["training"]["selection_mode"] == "legacy"
