@@ -83,6 +83,8 @@ def expand_plan(plan, device):
     defaults = plan.get("defaults", {})
     if not isinstance(defaults, dict) or set(defaults) - DEFAULTS_KEYS:
         raise ValueError("Invalid campaign defaults")
+    if type(defaults.get("pursuit_v13", False)) is not bool:
+        raise ValueError("defaults.pursuit_v13 must be boolean")
     stages = plan.get("stages")
     if not isinstance(stages, list) or not stages:
         raise ValueError("Campaign must declare a nonempty stages list")
