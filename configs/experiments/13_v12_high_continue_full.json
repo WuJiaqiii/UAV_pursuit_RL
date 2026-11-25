@@ -1,0 +1,82 @@
+{
+  "schema": "v12-pure-ppo-curriculum-v1",
+  "defaults": {
+    "preset": "standard",
+    "num_envs": 64,
+    "rollout_steps": 128,
+    "batch_size": 512,
+    "epochs": 2,
+    "history_steps": 1,
+    "legacy_terminal_records": false
+  },
+  "compare_direct_baseline": false,
+  "description": "Continue existing C3 low_random checkpoint through every medium and high task (tail/head-on/random). Six stage PPO course with per-task fixed-seed success matrix.",
+  "start_from_required": true,
+  "initial_parent_task": "random",
+  "stages": [
+    {
+      "name": "C4: Medium Tail",
+      "task": "medium_tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 6000000
+    },
+    {
+      "name": "C5: Medium Head-on",
+      "task": "medium_head_on",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 6000000
+    },
+    {
+      "name": "C6: Medium Random",
+      "task": "medium_random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 8000000
+    },
+    {
+      "name": "C7: High Tail",
+      "task": "high_tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 10000000
+    },
+    {
+      "name": "C8: High Head-on",
+      "task": "high_head_on",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 10000000
+    },
+    {
+      "name": "C9: High Random",
+      "task": "high_random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 12000000
+    }
+  ],
+  "evaluation": {
+    "profiles": [
+      "static",
+      "random",
+      "medium_tail",
+      "medium_head_on",
+      "medium_random",
+      "high_tail",
+      "high_head_on",
+      "high_random"
+    ],
+    "episodes": 32,
+    "seed": 930001,
+    "gate_success_rate": 0.8,
+    "gate_mode": "record_only"
+  }
+}
