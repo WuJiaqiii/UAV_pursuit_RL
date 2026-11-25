@@ -91,6 +91,15 @@ def observed_pd(env, smooth=False):
     v = obs[:, 3:6] * policy["relative_velocity_scale_mps"]
     a_target, velocity = obs[:, 6:9] * 7.0, obs[:, 9:12] * 50.0
     rot = obs[:, 12:21].reshape(-1, 3, 3)
+    if policy["relative_frame"] == "body":
+        # The PD audit remains physically identical in world coordinates.
+        # Only the Actor inputs use body-frame target-relative vectors.
+        def in_world(vector):
+            return rot.bmm(vector.unsqueeze(-1)).squeeze(-1)
+        r = in_world(r)
+        v = in_world(v)
+        a_target = in_world(a_target)
+        velocity = in_world(velocity)
     acc = limit(2.0 * r + 2.5 * v + a_target,
                 tr.get("teacher_accel_limit", 8.0))
     force = acc + p["drag"] * velocity * torch.linalg.vector_norm(
