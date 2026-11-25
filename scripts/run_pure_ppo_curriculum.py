@@ -40,6 +40,7 @@ FIELD_NAMES = (
     "arm", "stage", "stage_index", "seed", "train_task", "evaluated_task",
     "episodes", "successes", "success_rate",
     "success_ci95_lower", "success_ci95_upper",
+    "before_success_rate", "learning_gain_pp",
     "tilt_failure_rate",
     "timeout_rate", "unsafe_entry_rate", "mean_maximum_tilt_deg",
     "maximum_tilt_p95_deg", "checkpoint", "gate_met",
@@ -241,6 +242,8 @@ def _results_csv(reports, path):
                     success_rate=entry["success_rate"],
                     success_ci95_lower=entry.get("success_ci95_lower"),
                     success_ci95_upper=entry.get("success_ci95_upper"),
+                    before_success_rate=entry.get("before_success_rate"),
+                    learning_gain_pp=entry.get("learning_gain_pp"),
                     tilt_failure_rate=entry["tilt_failure_rate"],
                     timeout_rate=entry["timeout_rate"],
                     unsafe_entry_rate=entry["unsafe_entry_rate"],
@@ -428,6 +431,7 @@ def run(argv=None):
     started = time.monotonic()
     states = {i["id"]: base.default_state(i) for i in runs}
     reports = {}
+    external_parent_report = None
     checkpoints = {}
     active_id = None
     display = base.CampaignDisplay(interval=args.log_interval)
@@ -470,6 +474,36 @@ def run(argv=None):
                 reports[item["id"]] = None
                 if state["status"] == "completed":
                     state["status"] = "evaluating"
+        if external_parent:
+            parent_report_path = root / "external_parent_difficulty_matrix.json"
+            if parent_report_path.is_file():
+                external_parent_report = base._read_json(parent_report_path)
+                if (
+                    external_parent_report.get("checkpoint_sha256")
+                    != external_parent["sha256"]
+                    or external_parent_report.get("checkpoint_source_fingerprint")
+                    != external_parent["source_fingerprint"]
+                ):
+                    raise ValueError(
+                        "External C3 checkpoint/evaluation provenance changed"
+                    )
+            else:
+                prior_item = dict(
+                    id="external_parent",
+                    arm="external",
+                    stage="Previous curriculum",
+                    stage_index=0,
+                    seed=runs[0]["seed"],
+                    task=plan["initial_parent_task"],
+                )
+                external_parent_report = _matrix_report(
+                    Path(external_parent["path"]), runs[0]["config"],
+                    prior_item, evaluation, args.device
+                )
+                base._atomic_json(parent_report_path, external_parent_report)
+                if args.device.startswith("cuda"):
+                    import torch
+                    torch.cuda.empty_cache()
         snapshot(force=True)
         for item in runs:
             state = states[item["id"]]
@@ -631,11 +665,33 @@ def run(argv=None):
                         import torch
                         torch.cuda.empty_cache()
             reports[item["id"]] = report
+            # Compare BEFORE and AFTER the same stage on identical, held-out
+            # episode seeds. The previous stage's full difficulty matrix
+            # supplies the pre-training baseline with no extra evaluation.
+            prior_report = (
+                reports.get(parent_id) if parent_id else
+                external_parent_report if item["arm"] == "curriculum"
+                else None
+            )
+            if prior_report:
+                before_by_task = {
+                    entry["evaluated_task"]: entry["success_rate"]
+                    for entry in prior_report.get("results", [])
+                }
+                for entry in report["results"]:
+                    before = before_by_task.get(entry["evaluated_task"])
+                    entry["before_success_rate"] = before
+                    entry["learning_gain_pp"] = (
+                        100 * (entry["success_rate"] - before)
+                        if before is not None else None
+                    )
+                base._atomic_json(matrix_path, report)
             state["status"] = "completed"
             snapshot(force=True)
             base._atomic_json(root / "curriculum_results.json", dict(
                 schema="v12-pure-ppo-curriculum-results-v1",
                 records=[reports[x["id"]] for x in runs if reports.get(x["id"])],
+                external_parent=external_parent_report,
                 contrasts=_compare(reports, runs),
             ))
             _results_csv(
