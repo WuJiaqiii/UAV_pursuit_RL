@@ -12,6 +12,7 @@ import csv
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -36,10 +37,26 @@ PLAN_KEYS = frozenset((
 ))
 FIELD_NAMES = (
     "arm", "stage", "stage_index", "seed", "train_task", "evaluated_task",
-    "episodes", "successes", "success_rate", "tilt_failure_rate",
+    "episodes", "successes", "success_rate",
+    "success_ci95_lower", "success_ci95_upper",
+    "tilt_failure_rate",
     "timeout_rate", "unsafe_entry_rate", "mean_maximum_tilt_deg",
     "maximum_tilt_p95_deg", "checkpoint", "gate_met",
 )
+
+
+def wilson95(successes, episodes):
+    """95% binomial Wilson score interval (independent episodes)."""
+    if type(episodes) is not int or episodes <= 0:
+        raise ValueError("episodes must be positive")
+    p = successes / episodes
+    z = 1.959963984540054
+    denominator = 1 + z*z / episodes
+    center = (p + z*z / (2*episodes)) / denominator
+    spread = (z / denominator) * math.sqrt(
+        p*(1-p)/episodes + z*z/(4*episodes*episodes)
+    )
+    return max(0., center - spread), min(1., center + spread)
 
 
 def validate_plan(plan, device):
@@ -132,11 +149,14 @@ def _matrix_report(model_path, training_config, item, evaluation, device):
         )
         failures = report.get("failures", {})
         n = int(report["episodes"])
+        lower, upper = wilson95(int(report["successes"]), n)
         results.append(dict(
             evaluated_task=task,
             episodes=n,
             successes=int(report["successes"]),
             success_rate=float(report["success_rate"]),
+            success_ci95_lower=lower,
+            success_ci95_upper=upper,
             tilt_failure_rate=int(failures.get("tilt", 0)) / n,
             timeout_rate=int(failures.get("timeout", 0)) / n,
             unsafe_entry_rate=float(report.get("unsafe_entry_rate", 0)),
@@ -210,6 +230,8 @@ def _results_csv(reports, path):
                     episodes=entry["episodes"],
                     successes=entry["successes"],
                     success_rate=entry["success_rate"],
+                    success_ci95_lower=entry.get("success_ci95_lower"),
+                    success_ci95_upper=entry.get("success_ci95_upper"),
                     tilt_failure_rate=entry["tilt_failure_rate"],
                     timeout_rate=entry["timeout_rate"],
                     unsafe_entry_rate=entry["unsafe_entry_rate"],
