@@ -71,6 +71,30 @@ One unattended Pilot **without the V11 campaign**:
       --num-envs 64 --batch-size 512 --rollout-steps 128
     tail -f runs/v12_static_pilot.log
 
+## Full four-task experiment campaign (overall progress)
+
+For the **entire experiment's progress** (all tasks and seeds combined), use
+the new outer scheduler instead of launching four runs manually:
+
+~~~bash
+# Preview the total weighted physics-step budget:
+python -m scripts.run_pure_ppo_campaign   --out runs/v12_pure_ppo_campaign --device cuda --dry-run
+
+# Execute all four tasks consecutively, with safe automatic resume:
+bash scripts/launch_pure_ppo_campaign.sh runs/v12_pure_ppo_campaign
+
+# Monitor overall and current-task bars:
+tail -f runs/v12_pure_ppo_campaign.log
+python -m scripts.run_pure_ppo_campaign   --out runs/v12_pure_ppo_campaign --status
+~~~
+
+The default plan is configs/experiments/10_v12_pure_ppo_campaign.json
+(four quick independent PPO runs, 500k physics steps each).
+Customize per-stage budgets and seeds in a copied plan with a **fresh output
+directory**, then set V12_CAMPAIGN_PLAN before launching.
+Read docs/V12_CAMPAIGN_PROGRESS.md for output files, weighted ETA, checkpoints
+and interruption/resume rules.
+
 ## Live training progress
 
 The trainer displays a tqdm-style progress bar on an interactive terminal.
