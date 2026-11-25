@@ -93,6 +93,11 @@ def validate_plan(plan, device):
         raise ValueError("Unknown initial_parent_task")
     if expected_parent is not None and not requires_parent:
         raise ValueError("initial_parent_task requires start_from_required")
+    if expected_parent is not None and expected_parent not in profiles:
+        raise ValueError(
+            "Continuation evaluation.profiles must include initial_parent_task "
+            "to compute a fixed-seed pre-training success baseline"
+        )
     compare = plan.get("compare_direct_baseline", True)
     if type(compare) is not bool:
         raise ValueError("compare_direct_baseline must be boolean")
