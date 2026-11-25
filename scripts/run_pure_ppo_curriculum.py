@@ -526,10 +526,17 @@ def run(argv=None):
                 report = base._read_json(matrix_path)
                 _validate_saved_evaluation(report, item, checkpoint)
             else:
-                report = _matrix_report(
-                    checkpoint, item["config"], item, evaluation, args.device
-                )
-                base._atomic_json(matrix_path, report)
+                try:
+                    report = _matrix_report(
+                        checkpoint, item["config"], item, evaluation, args.device
+                    )
+                    base._atomic_json(matrix_path, report)
+                finally:
+                    # Evaluation is in the scheduler process. Release cached
+                    # GPU tensors before launching the next PPO child.
+                    if args.device.startswith("cuda"):
+                        import torch
+                        torch.cuda.empty_cache()
             reports[item["id"]] = report
             state["status"] = "completed"
             snapshot(force=True)
