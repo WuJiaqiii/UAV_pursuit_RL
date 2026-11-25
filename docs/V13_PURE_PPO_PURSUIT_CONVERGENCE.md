@@ -113,7 +113,7 @@ python -m scripts.run_pure_ppo_curriculum \
 ~~~
 
 A longer V13-only curriculum (W0 Near Static 3M -> Static 5M ->
-Low Tail 6M -> Low Random 8M) is available:
+Low Tail 6M -> Low Random 8M) is available with **strict 75% mastery gating**. If Near Static fails, the scheduler stops before launching more difficult stages:
 
 ~~~bash
 V12_CURRICULUM_PLAN=configs/experiments/17_v13_pursuit_low_curriculum.json \
