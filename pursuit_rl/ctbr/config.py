@@ -94,6 +94,7 @@ DEFAULT = {
         "save_every_updates": 1,
         "checkpoint_every_updates": 1,
         "fast_terminal_records": False,
+        "skip_mc_diagnostics": False,
         "prediction_updates_enabled": True,
         "minimum_success": 0.95,
         "teacher_method": "pn_hybrid",
@@ -290,8 +291,11 @@ def validate(c):
         raise ValueError("Invalid critical attitude reset settings")
     if reward["actuator_risk"] > 0 and not safe["predictive_enabled"]:
         raise ValueError("actuator_risk reward needs predictive_enabled")
-    if type(tr["fast_terminal_records"]) is not bool:
-        raise ValueError("training.fast_terminal_records must be boolean")
+    for key in ("fast_terminal_records", "skip_mc_diagnostics"):
+        if type(tr[key]) is not bool:
+            raise ValueError(f"training.{key} must be boolean")
+    if tr["skip_mc_diagnostics"] and tr["critic_updates"] > 0:
+        raise ValueError("Cannot skip MC diagnostics with supervised critic warmup")
     for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "checkpoint_every_updates", "initialization_episodes"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError(f"Invalid training.{key}")
