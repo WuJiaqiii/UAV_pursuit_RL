@@ -16,7 +16,8 @@
     "relative_position_scale_m": 8,
     "relative_velocity_scale_mps": 15,
     "initial_std": 0.18,
-    "exploration_time_s": 0.18
+    "exploration_time_s": 0.18,
+    "actor_initialization": "small_gain"
   },
   "stages": [
     {
