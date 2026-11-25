@@ -64,6 +64,7 @@ def make_config(args):
         ("progress_mode", "reward", "progress_mode"),
         ("progress_distance_floor_m", "reward", "progress_distance_floor_m"),
         ("checkpoint_selection", "training", "checkpoint_selection"),
+        ("actor_initialization", "training", "actor_initialization"),
     )
     for argument, section, key in overrides:
         value = getattr(args, argument, None)
@@ -136,6 +137,7 @@ def main(argv=None):
     ))
     ap.add_argument("--progress-distance-floor-m", type=float)
     ap.add_argument("--checkpoint-selection", choices=("legacy", "pursuit_progress"))
+    ap.add_argument("--actor-initialization", choices=("legacy", "small_gain"))
     ap.add_argument("--physics-steps", type=int)
     ap.add_argument("--init-from")
     ap.add_argument("--resume")
@@ -155,6 +157,7 @@ def main(argv=None):
             args.relative_velocity_scale_mps, args.initial_std,
             args.exploration_time_s, args.progress_mode,
             args.progress_distance_floor_m, args.checkpoint_selection,
+            args.actor_initialization,
         )) or args.legacy_terminal_records:
             ap.error("Resume locks task, parallelism and algorithm hyperparameters")
         _, c, _ = load_checkpoint(args.resume, device=args.device)
@@ -196,6 +199,7 @@ def main(argv=None):
             epochs=c["training"]["epochs"],
             fast_terminal_records=c["training"]["fast_terminal_records"],
             checkpoint_selection=c["training"]["checkpoint_selection"],
+            actor_initialization=c["training"]["actor_initialization"],
             progress_mode=c["reward"]["progress_mode"],
             relative_position_mode=c["policy"]["relative_position_mode"],
         ), indent=2, ensure_ascii=False))
