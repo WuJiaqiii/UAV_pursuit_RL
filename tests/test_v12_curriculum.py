@@ -280,3 +280,137 @@ def test_all_historical_registered_difficulty_groups_available():
     assert tier("medium_random") == "medium"
     assert tier("high_random") == "high"
     assert tier("extreme_random") == "extreme"
+
+
+def test_extended_plans_have_true_medium_high_extreme_training_courses():
+    from scripts.run_pure_ppo import TASKS
+    from pathlib import Path
+    plan_paths = [
+        Path("configs/experiments/12_v12_high_continue_compact.json"),
+        Path("configs/experiments/13_v12_high_continue_full.json"),
+        Path("configs/experiments/14_v12_extreme_continue.json"),
+    ]
+    expected = [
+        ("random", ["medium_tail", "medium_random", "high_tail", "high_random"], 35000000),
+        ("random", ["medium_tail", "medium_head_on", "medium_random",
+                    "high_tail", "high_head_on", "high_random"], 52000000),
+        ("high_random", ["extreme_tail", "extreme_head_on", "extreme_random"], 32000000),
+    ]
+    for file, (parent, tasks, budget) in zip(plan_paths, expected):
+        plan = json.loads(file.read_text(encoding="utf8"))
+        assert plan["start_from_required"] is True
+        assert plan["initial_parent_task"] == parent
+        assert plan["compare_direct_baseline"] is False
+        assert [s["task"] for s in plan["stages"]] == tasks
+        assert all(task in TASKS for task in tasks)
+        runs, settings = curriculum.validate_plan(plan, "cpu")
+        assert len(runs) == len(tasks)
+        assert sum(r["budget"] for r in runs) == budget
+        assert all(r["arm"] == "curriculum" for r in runs)
+        assert runs[0]["parent_id"] is None
+        for i in range(1, len(runs)):
+            assert runs[i]["parent_id"] == runs[i-1]["id"]
+        assert set(tasks).issubset(set(settings["profiles"]))
+        assert settings["gate_mode"] == "record_only"
+
+
+def test_external_parent_is_used_exactly_once_and_ancestry_is_locked(
+    tmp_path, plan_file, monkeypatch
+):
+    from types import SimpleNamespace
+    from scripts import run_pure_ppo as pure
+    plan = json.loads(plan_file.read_text())
+    plan["stages"] = [
+        dict(name="C4 Medium Tail", task="medium_tail", seeds=[42], physics_steps=40),
+        dict(name="C5 Medium Random", task="medium_random", seeds=[42], physics_steps=40),
+    ]
+    plan["evaluation"]["profiles"] = ["medium_tail", "medium_random"]
+    plan["compare_direct_baseline"] = False
+    plan["start_from_required"] = True
+    plan["initial_parent_task"] = "random"
+    plan_file.write_text(json.dumps(plan))
+    first = tmp_path / "c3_best_current.pt"
+    first.write_bytes(b"trusted fixture parent")
+    original = pure.make_config(SimpleNamespace(
+        task="random", preset="quick", device="cpu", seed=42,
+        num_envs=2, rollout_steps=2, batch_size=4, epochs=1,
+        history_steps=1, physics_steps=40,
+        legacy_terminal_records=False,
+    ))
+    def fake_load(path, device=None):
+        assert str(path) == str(first)
+        assert device == "cpu"
+        return object(), original, dict(origin="ppo", source_fingerprint="prior-branch")
+    monkeypatch.setattr(curriculum, "load_checkpoint", fake_load)
+    jobs = curriculum.validate_plan(plan, "cpu")[0]
+    by_id = {i["id"]: i for i in jobs}
+    command_log = []
+
+    class FakePopen:
+        def __init__(self, command, stdout, stderr, env):
+            command_log.append(command)
+            path = Path(command[command.index("--out") + 1])
+            item = by_id[path.name]
+            path.mkdir(parents=True)
+            (path / "checkpoints").mkdir()
+            (path / "config.json").write_text(json.dumps(item["config"]))
+            (path / "checkpoints/best_current.pt").write_bytes(
+                item["id"].encode()
+            )
+            (path / "training_summary.json").write_text(json.dumps(dict(
+                physics_steps=item["budget"], ppo_updates=2,
+                completed_episodes=8, successful_episodes=4,
+                source_fingerprint=source_fingerprint(),
+            )))
+        def poll(self):
+            return 0
+
+    def fake_matrix(path, config, item, settings, device):
+        return dict(
+            id=item["id"], arm=item["arm"], task=item["task"],
+            stage=item["stage"], stage_index=item["stage_index"],
+            seed=item["seed"], checkpoint=str(path),
+            checkpoint_sha256=curriculum.base._hash_file(path),
+            checkpoint_source_fingerprint=source_fingerprint(),
+            own_task_success_rate=0.5, gate_met=False,
+            gate_success_rate=0.8, results=[
+                dict(evaluated_task=profile, episodes=8, successes=4,
+                     success_rate=0.5, tilt_failure_rate=0.,
+                     timeout_rate=0., unsafe_entry_rate=0.,
+                     mean_maximum_tilt_deg=1., maximum_tilt_p95_deg=2.)
+                for profile in settings["profiles"]
+            ],
+        )
+
+    monkeypatch.setattr(curriculum.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(curriculum, "_matrix_report", fake_matrix)
+    target = tmp_path / "continuation"
+    arguments = [
+        "--plan", str(plan_file), "--out", str(target), "--device", "cpu",
+        "--start-from", str(first),
+    ]
+    with pytest.raises(SystemExit):
+        curriculum.run(arguments[:-2])  # Required parent cannot be omitted.
+
+    final = curriculum.run(arguments)
+    assert final["status"] == "completed"
+    assert len(command_log) == 2
+    assert command_log[0][-2:] == ["--init-from", str(first)]
+    assert command_log[1][-2] == "--init-from"
+    assert command_log[1][-1].endswith(
+        "curr_01_medium_tail_seed42/checkpoints/best_current.pt"
+    )
+    manifest = json.loads((target/"campaign_manifest.json").read_text())
+    assert manifest["external_parent"]["sha256"] == curriculum.base._hash_file(first)
+    assert manifest["external_parent"]["origin"] == "ppo"
+    assert (target/"dependencies"/"curr_01_medium_tail_seed42.json").exists()
+
+    def fail_run(*a, **k):
+        raise AssertionError("Completed continuation stages must not restart")
+    monkeypatch.setattr(curriculum.subprocess, "Popen", fail_run)
+    resumed = curriculum.run(arguments + ["--resume-existing"])
+    assert resumed["completed_runs"] == 2
+
+    first.write_bytes(b"modified parent checkpoint")
+    with pytest.raises(SystemExit):
+        curriculum.run(arguments + ["--resume-existing"])
