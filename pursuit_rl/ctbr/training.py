@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import numbers
+import sys
 import time
 from pathlib import Path
 import torch
@@ -18,6 +19,7 @@ from .errors import ExperimentGateError
 from .selection import passed
 from .value_learning import fit_critic, calibrate_critic
 from .mixture import training_env, target_positions
+from .progress import TrainingProgress
 from pursuit_rl.learning.prediction import supervised_windows, fit_predictor
 
 
@@ -41,13 +43,17 @@ def emit(root, event, **fields):
     serialized = json.dumps(row, allow_nan=False)
     with (root / "metrics.jsonl").open("a") as f:
         f.write(serialized + "\n")
-    print(
-        json.dumps(
-            {k: v for k, v in row.items() if k not in ("diagnostics", "parent")},
-            allow_nan=False,
-        ),
-        flush=True,
-    )
+    # Interactive terminals use the progress bar as the live display. Keep
+    # machine-readable event lines in metrics.jsonl; redirected/nohup logs
+    # retain both JSON events and periodic human-readable progress snapshots.
+    if not sys.stdout.isatty():
+        print(
+            json.dumps(
+                {k: v for k, v in row.items() if k not in ("diagnostics", "parent")},
+                allow_nan=False,
+            ),
+            flush=True,
+        )
 
 
 @torch.no_grad()
@@ -335,7 +341,7 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset,
 
 def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None,
           run_manifest=None, bc_profiles=None, distillation=None,
-          validation_profiles=None):
+          validation_profiles=None, show_progress=True):
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
     if resume and run_manifest is not None:
@@ -651,6 +657,19 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         "validation_every"
     ]
     training_wall_start = time.perf_counter()
+    progress_display = TrainingProgress(
+        total_steps=tr["physics_steps"],
+        initial_steps=progress["physics_steps"],
+        initial_updates=progress["ppo_updates"],
+        completed_episodes=progress["completed_episodes"],
+        successful_episodes=progress["successful_episodes"],
+        enabled=show_progress,
+    )
+    progress_display.update(
+        progress["physics_steps"], progress["ppo_updates"],
+        progress["completed_episodes"], progress["successful_episodes"],
+        phase="starting", force=True,
+    )
     while (
         progress["physics_steps"] < tr["physics_steps"]
         and not progress["promotion_passed"]
@@ -894,7 +913,17 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             root,
             "ppo_update",
             physics_steps=progress["physics_steps"],
+            target_physics_steps=tr["physics_steps"],
+            progress_fraction=min(
+                progress["physics_steps"] / max(tr["physics_steps"], 1), 1.0
+            ),
             ppo_updates=progress["ppo_updates"],
+            completed_episodes_total=progress["completed_episodes"],
+            successful_episodes_total=progress["successful_episodes"],
+            success_rate_total=(
+                progress["successful_episodes"] / progress["completed_episodes"]
+                if progress["completed_episodes"] else None
+            ),
             nominal_seconds_per_env=progress["physics_steps"] * env.dt / env.n,
             completed_episodes=len(records),
             successes=sum(r["success"] for r in records),
@@ -945,6 +974,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 for name, component_sum in component_scaled_sums.items()
             },
         )
+        progress_display.update(
+            progress["physics_steps"], progress["ppo_updates"],
+            progress["completed_episodes"], progress["successful_episodes"],
+            phase="training",
+        )
         interval = tr["mc_calibration_every_updates"]
         if interval and (
             progress["ppo_updates"] - progress["last_mc_calibration_update"] >= interval
@@ -965,6 +999,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             or progress["physics_steps"] >= tr["physics_steps"]
         )
         if validated_this_update:
+            progress_display.update(
+                progress["physics_steps"], progress["ppo_updates"],
+                progress["completed_episodes"], progress["successful_episodes"],
+                phase="validation", force=True,
+            )
             report, _ = evaluate(
                 model, c, tr["validation_episodes"], tr["validation_seed"]
             )
@@ -1047,6 +1086,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             next_validation = (
                 progress["physics_steps"] // tr["validation_every"] + 1
             ) * tr["validation_every"]
+        progress_display.update(
+            progress["physics_steps"], progress["ppo_updates"],
+            progress["completed_episodes"], progress["successful_episodes"],
+            phase="training",
+        )
         if (
             progress["ppo_updates"] % tr["checkpoint_every_updates"] == 0
             or progress["physics_steps"] >= tr["physics_steps"]
@@ -1063,6 +1107,13 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             )
         if progress["promotion_passed"]:
             break
+    progress_display.finish(
+        status=(
+            "completed" if progress["physics_steps"] >= tr["physics_steps"]
+            else "early-stop" if progress["promotion_passed"]
+            else "stopped"
+        )
+    )
     result = dict(
         schema="pursuit-first-entry-training-v1",
         **progress,
