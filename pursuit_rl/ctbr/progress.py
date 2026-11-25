@@ -72,7 +72,6 @@ class TrainingProgress:
         )
         now = self.clock()
         self.started_at = now
-        self.last_sample_at = now
         self.last_output_at = now
         self.last_line_width = 0
         self.phase = "training"
