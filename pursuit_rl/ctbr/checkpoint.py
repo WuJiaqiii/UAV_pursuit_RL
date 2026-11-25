@@ -183,6 +183,7 @@ def load(path, device=None, optimizers=False):
     for key, old_value in (
         ("relative_position_scale_m", 100.0),
         ("relative_position_encoding", "linear"),
+        ("relative_frame", "world"),
     ):
         if key not in original_model_config and comparison.get(key) == old_value:
             comparison.pop(key)
