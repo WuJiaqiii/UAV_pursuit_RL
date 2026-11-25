@@ -70,6 +70,7 @@ def make_config(args):
         "save_every_updates": 100,
         "checkpoint_every_updates": 10,
         "fast_terminal_records": not args.legacy_terminal_records,
+        "skip_mc_diagnostics": True,
         "physics_steps": (
             args.physics_steps
             if args.physics_steps is not None
@@ -110,11 +111,15 @@ def main(argv=None):
     torch.set_num_threads(args.cpu_threads)
     if args.resume:
         if any(v is not None for v in (
-            args.task, args.num_envs, args.rollout_steps,
+            args.num_envs, args.rollout_steps,
             args.batch_size, args.epochs, args.history_steps,
         )) or args.legacy_terminal_records:
             ap.error("Resume locks task, parallelism and algorithm hyperparameters")
         _, c, _ = load_checkpoint(args.resume, device=args.device)
+        if args.task is not None:
+            expected = load_config(TASKS[args.task], device=args.device)["task"]["name"]
+            if c["task"]["name"] != expected:
+                raise ValueError("Resumed checkpoint task does not match --task")
         if args.physics_steps is not None:
             c["training"]["physics_steps"] = args.physics_steps
         c = validate(c)
@@ -161,7 +166,7 @@ def main(argv=None):
     output = dict(
         schema="pure-ppo-fast-baseline-v1",
         task=c["task"]["name"],
-        preset=args.preset,
+        preset="resume" if args.resume else args.preset,
         seed=c["seed"],
         wall_time_seconds=elapsed,
         ppo_physics_steps=result["physics_steps"],
@@ -176,7 +181,7 @@ def main(argv=None):
         batch_size=c["training"]["batch_size"],
         epochs=c["training"]["epochs"],
         checkpoint=str(best if best.exists() else latest),
-        notes="Initial MC evaluations measure Critic targets; the Critic is optimized only by PPO. Teacher is never queried.",
+        notes="No MC critic prefit or validation; Critic is optimized only in PPO. No teacher, prediction network or Safety Critic.",
     )
     write_json(root / "pure_ppo_summary.json", output)
     print(json.dumps(output, ensure_ascii=False, indent=2))
