@@ -28,6 +28,7 @@ def model_config(c):
         position_error_cap_m=p["position_error_cap_m"],
         relative_position_scale_m=p["relative_position_scale_m"],
         relative_position_encoding=p["relative_position_encoding"],
+        relative_frame=p["relative_frame"],
         hidden_actor=p["hidden_actor"],
         hidden_critic=p["hidden_critic"],
         log_std_init=math.log(p["initial_std"]),
