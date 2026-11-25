@@ -47,6 +47,7 @@ DEFAULTS_KEYS = frozenset((
     "relative_position_mode", "relative_position_scale_m",
     "relative_velocity_scale_mps", "progress_mode",
     "progress_distance_floor_m", "checkpoint_selection",
+    "initial_std", "exploration_time_s",
 ))
 STAGE_KEYS = frozenset(("name", "task", "seeds", "preset", "physics_steps"))
 PROGRESS_SCHEMA = "v12-pure-ppo-campaign-progress-v1"
@@ -116,6 +117,8 @@ def expand_plan(plan, device):
                 batch_size=defaults.get("batch_size"),
                 epochs=defaults.get("epochs"),
                 history_steps=defaults.get("history_steps"),
+                initial_std=defaults.get("initial_std"),
+                exploration_time_s=defaults.get("exploration_time_s"),
                 relative_position_mode=defaults.get("relative_position_mode"),
                 relative_position_scale_m=defaults.get("relative_position_scale_m"),
                 relative_velocity_scale_mps=defaults.get("relative_velocity_scale_mps"),
@@ -319,6 +322,8 @@ def run_command(item, directory, device, resume_checkpoint=None):
         "--batch-size", str(config["training"]["batch_size"]),
         "--epochs", str(config["training"]["epochs"]),
         "--history-steps", str(config["policy"]["history_steps"]),
+        "--initial-std", str(config["policy"]["initial_std"]),
+        "--exploration-time-s", str(config["policy"]["exploration_time_s"]),
         "--relative-position-mode", config["policy"]["relative_position_mode"],
         "--relative-position-scale-m", str(config["policy"]["relative_position_scale_m"]),
         "--relative-velocity-scale-mps", str(config["policy"]["relative_velocity_scale_mps"]),
