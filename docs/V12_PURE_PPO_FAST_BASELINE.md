@@ -81,7 +81,7 @@ phase to optimizer or validation when those stages are running.
 
 Example:
 
-    Physics [████████████░░░░░░░░░░]  54.2% 1.08M/2.00M | PPO 169 | 42.6k steps/s | Elapsed 00:07:42 | ETA 00:06:31 | Success 76.3% (312 eps) | rollout
+    Physics [████████████░░░░░░░░░░]  54.2% 1.08M/2.00M | PPO 169 | 42.6k steps/s | Elapsed 00:07:42 | ETA 00:06:31 | Train SR 76.3% (312 eps) | rollout
 
 When stdout/stderr are redirected by the unattended launcher, the display
 automatically switches to concise `[progress]` snapshots every 10 seconds,
