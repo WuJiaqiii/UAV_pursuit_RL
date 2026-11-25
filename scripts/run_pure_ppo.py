@@ -50,7 +50,11 @@ def make_config(args):
     c["policy"]["history_steps"] = (
         args.history_steps if args.history_steps is not None else 1
     )
-    c["policy"]["initial_std"] = 0.15
+    c["policy"]["initial_std"] = (
+        args.initial_std if getattr(args, "initial_std", None) is not None else 0.15
+    )
+    if getattr(args, "exploration_time_s", None) is not None:
+        c["policy"]["exploration_time_s"] = args.exploration_time_s
     c["policy"]["min_std"] = 0.02
     c["policy"]["max_std"] = 0.3
     overrides = (
@@ -122,6 +126,8 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int)
     ap.add_argument("--history-steps", type=int)
     ap.add_argument("--relative-position-mode", choices=("linear", "asinh"))
+    ap.add_argument("--initial-std", type=float)
+    ap.add_argument("--exploration-time-s", type=float)
     ap.add_argument("--relative-position-scale-m", type=float)
     ap.add_argument("--relative-velocity-scale-mps", type=float)
     ap.add_argument("--progress-mode", choices=(
@@ -146,7 +152,8 @@ def main(argv=None):
             args.num_envs, args.rollout_steps,
             args.batch_size, args.epochs, args.history_steps,
             args.relative_position_mode, args.relative_position_scale_m,
-            args.relative_velocity_scale_mps, args.progress_mode,
+            args.relative_velocity_scale_mps, args.initial_std,
+            args.exploration_time_s, args.progress_mode,
             args.progress_distance_floor_m, args.checkpoint_selection,
         )) or args.legacy_terminal_records:
             ap.error("Resume locks task, parallelism and algorithm hyperparameters")
