@@ -98,7 +98,7 @@ class TrainingProgress:
             f"{_steps(self.steps)}/{_steps(self.total_steps)} | "
             f"PPO {self.updates} | {_rate(rate)} steps/s | "
             f"Elapsed {_duration(elapsed)} | ETA {_duration(eta)} | "
-            f"Success {success} ({self.completed} eps) | {phase}"
+            f"Train SR {success} ({self.completed} eps) | {phase}"
         )
 
     def update(
