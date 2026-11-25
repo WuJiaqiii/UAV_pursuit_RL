@@ -39,6 +39,7 @@ DEFAULT = {
         "relative_position_scale_m": 100.0,
         "relative_velocity_scale_mps": 50.0,
         "relative_position_encoding": "linear",
+        "relative_frame": "world",
         "hidden_actor": [128, 128],
         "hidden_critic": [128, 128],
         "history_steps": 8,
@@ -235,6 +236,8 @@ def validate(c):
         raise ValueError("Relative position/velocity scales must be positive")
     if pol["relative_position_encoding"] not in ("linear", "asinh"):
         raise ValueError("Unsupported Actor-relative-position encoding")
+    if pol["relative_frame"] not in ("world", "body"):
+        raise ValueError("Unsupported relative state reference frame")
     for key in ("hidden_actor", "hidden_critic"):
         if not pol[key] or any(type(v) is not int or v <= 0 for v in pol[key]):
             raise ValueError(f"Invalid policy.{key}")
