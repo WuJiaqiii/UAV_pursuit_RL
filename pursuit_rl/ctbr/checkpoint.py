@@ -144,7 +144,7 @@ def load(path, device=None, optimizers=False):
     for section, keys in {
         "training": ("bc_rounds", "aux_pd_coef", "checkpoint_every_updates", "fast_terminal_records", "skip_mc_diagnostics", "selection_mode"),
         "policy": ("relative_position_scale_m", "relative_velocity_scale_mps",
-                   "relative_position_encoding"),
+                   "relative_position_encoding", "relative_frame"),
         "reward": ("tilt_guard", "tilt_guard_start_deg",
                    "tilt_guard_lookahead_s", "actuator_risk", "progress_mode"),
     }.items():
