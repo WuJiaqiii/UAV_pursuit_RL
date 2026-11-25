@@ -43,7 +43,7 @@ def test_tty_progress_uses_carriage_return_and_finishes_cleanly():
     assert "100.0%" in output
     assert "100/100" in output
     assert "PPO 10" in output
-    assert "Success 80.0% (10 eps)" in output
+    assert "Train SR 80.0% (10 eps)" in output
     assert output.endswith("\n")
 
 
