@@ -25,6 +25,7 @@ from pursuit_rl.ctbr.checkpoint import source_fingerprint
 from pursuit_rl.ctbr.config import load as load_config
 from pursuit_rl.ctbr.evaluation import evaluate
 from scripts.run_pure_ppo import TASKS
+from scripts import run_pure_ppo as pure_runner
 from scripts import run_pure_ppo_campaign as base
 
 SCHEMA = "v12-pure-ppo-curriculum-v1"
@@ -305,6 +306,7 @@ def run(argv=None):
         schema=SCHEMA, plan_sha256=base._hash_file(plan_path),
         runner_sha256=base._hash_file(__file__),
         parent_runner_sha256=base._hash_file(base.__file__),
+        pure_runner_sha256=base._hash_file(pure_runner.__file__),
         source_fingerprint=source_fingerprint(),
         device=args.device,
         evaluation=evaluation,
@@ -403,6 +405,28 @@ def run(argv=None):
                     snapshot("gate_failed", force=True)
                     return base._read_json(state_file)
             directory = root / item["id"]
+            # Parent checkpoint ancestry is persistent across interruption.
+            # Place this outside the run dir because the standalone PPO
+            # trainer refuses a nonempty directory for a fresh run.
+            if parent_ckpt:
+                dependency = dict(
+                    parent_id=parent_id,
+                    parent_sha256=base._hash_file(parent_ckpt),
+                    parent_path=str(parent_ckpt.resolve()),
+                )
+                ancestry = root / "dependencies" / (item["id"] + ".json")
+                if ancestry.exists():
+                    if base._read_json(ancestry) != dependency:
+                        raise RuntimeError(
+                            "Curriculum parent checkpoint was replaced; "
+                            "refusing unsafe resume"
+                        )
+                elif (directory / "config.json").exists():
+                    raise RuntimeError(
+                        "Resumed transferred stage lacks checkpoint ancestry"
+                    )
+                else:
+                    base._atomic_json(ancestry, dependency)
             state["status"] = "running"
             snapshot(force=True)
             if checkpoints[item["id"]] is None and not (directory / "training_summary.json").exists():
