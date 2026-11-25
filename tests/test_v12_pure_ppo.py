@@ -116,6 +116,7 @@ def test_minimal_training_from_scratch_with_sparse_checkpoints(tmp_path, monkeyp
         validation_episodes=2, mc_calibration_every_updates=0,
         prediction_updates_enabled=False, fast_terminal_records=True,
         checkpoint_every_updates=10, save_every_updates=100,
+        skip_mc_diagnostics=True,
     )
     c["training"]["bc_updates"] = 0
     c["policy"]["history_steps"] = 1
@@ -126,6 +127,8 @@ def test_minimal_training_from_scratch_with_sparse_checkpoints(tmp_path, monkeyp
     assert result["ppo_updates"] > 0
     assert result["physics_steps"] >= 100
     assert result["training_wall_s"] >= 0
+    assert result["mc_physics_steps"] == 0
+    assert not (tmp_path / "fresh/critic_warmup_heldout.json").exists()
     metrics = [
         json.loads(x) for x in (tmp_path / "fresh/metrics.jsonl").read_text().splitlines()
         if '"event": "ppo_update"' in x
