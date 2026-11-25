@@ -31,6 +31,8 @@ class AsymmetricPPO(nn.Module):
         self.obs_dim = obs_dim
         self.base_obs_dim = config.get("base_obs_dim", obs_dim)
         self.position_error_cap_m = float(config.get("position_error_cap_m", 0.0))
+        self.relative_position_scale_m = float(config.get("relative_position_scale_m", 100.0))
+        self.relative_position_encoding = config.get("relative_position_encoding", "linear")
         self.prediction_config = config.get("prediction", {"enabled": False})
         self.predictor = (
             TrajectoryPredictor(self.prediction_config)
@@ -126,10 +128,22 @@ class AsymmetricPPO(nn.Module):
             return features
         features = features.clone()
         position = features[..., :3]
-        length = torch.linalg.vector_norm(position, dim=-1, keepdim=True)
-        features[..., :3] = position * (
-            self.position_error_cap_m / 30.0 / length.clamp_min(1e-9)
+        if self.relative_position_encoding == "asinh":
+            physical_position = (
+                torch.sinh(position) * self.relative_position_scale_m
+            )
+        else:
+            physical_position = position * self.relative_position_scale_m
+        length = torch.linalg.vector_norm(physical_position, dim=-1, keepdim=True)
+        bounded_position = physical_position * (
+            self.position_error_cap_m / length.clamp_min(1e-9)
         ).clamp(max=1)
+        scaled = bounded_position / self.relative_position_scale_m
+        features[..., :3] = (
+            torch.asinh(scaled)
+            if self.relative_position_encoding == "asinh"
+            else scaled
+        )
         return features
 
     @torch.no_grad()
