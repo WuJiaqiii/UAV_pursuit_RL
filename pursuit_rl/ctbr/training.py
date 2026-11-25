@@ -834,6 +834,15 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 }[rec["reason"]]
             buf.diagnostic_steps = tick + 1
             records.extend(completed)
+            progress_display.update(
+                progress["physics_steps"] + rollout_physics_steps,
+                progress["ppo_updates"],
+                progress["completed_episodes"] + len(records),
+                progress["successful_episodes"] + sum(
+                    record["success"] for record in records
+                ),
+                phase="rollout",
+            )
             episode_start = term | trunc
             obs, priv = env.reset(episode_start) if completed else (nobs, npriv)
         rollout_wall_s = time.perf_counter() - update_wall_start
@@ -850,6 +859,16 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             ),
             torch_rng=torch.get_rng_state(),
             progress=copy.deepcopy(progress),
+        )
+        progress_display.update(
+            progress["physics_steps"] + rollout_physics_steps,
+            progress["ppo_updates"],
+            progress["completed_episodes"] + len(records),
+            progress["successful_episodes"] + sum(
+                record["success"] for record in records
+            ),
+            phase="optimizer",
+            force=progress_display.is_tty,
         )
         try:
             stats = model.update(buf, aux_pd_coef=aux_pd_coef, distill_coef=distill_coef)
