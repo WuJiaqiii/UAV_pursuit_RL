@@ -373,10 +373,14 @@ class CTBRBatch:
         goals = u.pos.new_tensor(
             [c["radius"] / 5.0, c["entry_relative_speed_max_mps"] / 15.0]
         ).expand(self.n, 2)
+        policy = self.config["policy"]
+        relative = (t.pos - u.pos).float() / policy["relative_position_scale_m"]
+        if policy["relative_position_encoding"] == "asinh":
+            relative = torch.asinh(relative)
         obs = torch.cat(
             (
-                (t.pos - u.pos) / 100.0,
-                (t.vel - u.vel) / 50.0,
+                relative,
+                (t.vel - u.vel).float() / policy["relative_velocity_scale_mps"],
                 t.acc / 7.0,
                 u.vel / 50.0,
                 u.rot.flatten(1),
@@ -649,9 +653,16 @@ class CTBRBatch:
                 ),
             )
         length = c["entry_velocity_distance_m"]
-        progress_reward = r["progress"] * (
-            previous / (previous + length) - distance / (distance + length)
-        )
+        if r["progress_mode"] == "initial_normalized":
+            # The original saturating potential loses resolution at 100-200m.
+            # Normalize episode progress by its initial distance so advancing
+            # toward a distant target is rewarded on the same scale as C0.
+            normalizer = norm(self.initial_rel_pos).clamp_min(c["radius"] + 0.25)
+            progress_reward = r["progress"] * (previous - distance) / normalizer
+        else:
+            progress_reward = r["progress"] * (
+                previous / (previous + length) - distance / (distance + length)
+            )
         closing_speed = (
             -((t.vel - u.vel).float() * new_relative).sum(1)
             / distance.clamp_min(1e-6)
