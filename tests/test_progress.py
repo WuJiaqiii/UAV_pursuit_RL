@@ -68,7 +68,7 @@ def test_redirected_log_is_periodic_not_carriage_return_spam():
     assert "\r" not in output
     assert "60.0%" in output
     assert "ETA" in output
-    assert "Success 50.0% (4 eps)" in output
+    assert "Train SR 50.0% (4 eps)" in output
     assert "completed" in output
 
 
