@@ -52,7 +52,7 @@ python -m scripts.run_pure_ppo_campaign \
 Illustrative output (not measured training results):
 
 ~~~text
-[CAMPAIGN] Overall [███████████░░░░░░░░░░░] 50.0% | 2/4 runs | 1,000,000/2,000,000 steps | Elapsed 00:32:00 | ETA 00:32:00 | running
+[CAMPAIGN] Overall [███████████░░░░░░░░░░░] 56.2% | 2/4 runs | 1,125,000/2,000,000 steps | Elapsed 00:32:00 | ETA 00:32:00 | running
 [CURRENT]  Current [█████░░░░░░░░░░░░░░░░░] 25.0% | Stage 3 · Low Head-on / head_on seed=42 | 125,000/500,000 steps | PPO 25 | Train SR 54.2% | running
 ~~~
 
