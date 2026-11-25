@@ -1,0 +1,55 @@
+{
+  "schema": "v12-pure-ppo-curriculum-v1",
+  "defaults": {
+    "preset": "standard",
+    "num_envs": 64,
+    "rollout_steps": 128,
+    "batch_size": 512,
+    "epochs": 2,
+    "history_steps": 1,
+    "legacy_terminal_records": false
+  },
+  "compare_direct_baseline": false,
+  "description": "Continue from completed High Random checkpoint into extreme tail/head-on/random pure PPO training with 3 staged higher-speed tasks.",
+  "start_from_required": true,
+  "initial_parent_task": "high_random",
+  "stages": [
+    {
+      "name": "C10: Extreme Tail",
+      "task": "extreme_tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 10000000
+    },
+    {
+      "name": "C11: Extreme Head-on",
+      "task": "extreme_head_on",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 10000000
+    },
+    {
+      "name": "C12: Extreme Random",
+      "task": "extreme_random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 12000000
+    }
+  ],
+  "evaluation": {
+    "profiles": [
+      "random",
+      "high_random",
+      "extreme_tail",
+      "extreme_head_on",
+      "extreme_random"
+    ],
+    "episodes": 32,
+    "seed": 940001,
+    "gate_success_rate": 0.8,
+    "gate_mode": "record_only"
+  }
+}
