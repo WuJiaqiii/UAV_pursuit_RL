@@ -294,6 +294,19 @@ def run(argv=None):
         for stage in data.get("stages", []):
             print(f"Stage {stage['name']}: {stage['completed']}/{stage['runs']} "
                   f"({stage['percent']:.1f}%)")
+        results_path = root / "curriculum_results.json"
+        if results_path.is_file():
+            saved = base._read_json(results_path)
+            print("Difficulty matrix (fixed heldout episodes, best checkpoint):")
+            for record in saved.get("records", []):
+                scores = "  ".join(
+                    f"{x['evaluated_task']}={x['successes']}/{x['episodes']}"
+                    for x in record.get("results", [])
+                )
+                print(
+                    f"  {record['arm']} {record['stage']} seed={record['seed']} | "
+                    f"{scores} | gate={'PASS' if record['gate_met'] else 'FAIL'}"
+                )
         return data
     if args.poll_seconds <= 0 or args.log_interval <= 0 or args.cpu_threads <= 0:
         parser.error("Invalid polling/logging/CPU thread settings")
