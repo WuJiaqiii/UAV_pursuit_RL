@@ -201,3 +201,35 @@ def test_new_close_range_task_does_not_start_inside_capture_sphere():
     c = config("near_static")
     assert c["task"]["distance"][0] > c["task"]["radius"]
     assert c["task"]["duration"] < config("static")["task"]["duration"]
+
+
+def test_small_gain_actor_init_propagates_gradients_to_earliest_layer():
+    from pursuit_rl.ctbr.checkpoint import new_model, model_config
+    from pursuit_rl.ctbr.training import initialize_fresh_actor
+
+    c = config("near_static")
+    c["training"]["zero_initial_actor_mean"] = True
+    c["training"]["actor_initialization"] = "small_gain"
+    c["policy"]["exploration_time_s"] = 0.18
+    model = new_model(c, optimizers=False)
+    initialize_fresh_actor(model, c["training"])
+    assert float(model.actor[-1].weight.abs().max()) < 0.03
+    assert model.actor[-1].weight.abs().sum() > 0
+    assert model.actor[0].weight[:, 21:].abs().sum() > 0
+    obs = torch.randn(12, model.obs_dim)
+    out = model.actor(obs)
+    assert float(out.abs().max()) < 0.12
+    (out**2).sum().backward()
+    assert model.actor[0].weight.grad.abs().sum() > 0
+    assert model_config(c)["exploration_rho"] > 0.9
+
+    old = config("near_static")
+    old["training"]["zero_initial_actor_mean"] = True
+    old["training"]["actor_initialization"] = "legacy"
+    old_model = new_model(old, optimizers=False)
+    initialize_fresh_actor(old_model, old["training"])
+    assert old_model.actor[-1].weight.abs().sum() == 0
+    assert old_model.actor[0].weight[:, 21:].abs().sum() == 0
+    old_out = old_model.actor(obs)
+    (old_out**2).sum().backward()
+    assert old_model.actor[0].weight.grad.abs().sum() == 0
