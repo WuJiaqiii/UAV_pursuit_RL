@@ -20,6 +20,9 @@ from .selection import passed
 from .value_learning import fit_critic, calibrate_critic
 from .mixture import training_env, target_positions
 from .progress import TrainingProgress
+
+
+_PROGRESS_ON_TTY = False
 from pursuit_rl.learning.prediction import supervised_windows, fit_predictor
 
 
@@ -46,7 +49,7 @@ def emit(root, event, **fields):
     # Interactive terminals use the progress bar as the live display. Keep
     # machine-readable event lines in metrics.jsonl; redirected/nohup logs
     # retain both JSON events and periodic human-readable progress snapshots.
-    if not sys.stdout.isatty():
+    if not sys.stdout.isatty() or not _PROGRESS_ON_TTY:
         print(
             json.dumps(
                 {k: v for k, v in row.items() if k not in ("diagnostics", "parent")},
@@ -342,6 +345,10 @@ def run_bc_initialization(c, model, root, ckpt, progress, transfer, seed_offset,
 def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None,
           run_manifest=None, bc_profiles=None, distillation=None,
           validation_profiles=None, show_progress=True):
+    global _PROGRESS_ON_TTY
+    _PROGRESS_ON_TTY = bool(
+        show_progress and sys.stdout.isatty() and sys.stderr.isatty()
+    )
     if resume and init_from:
         raise ValueError("resume and init_from are mutually exclusive")
     if resume and run_manifest is not None:
