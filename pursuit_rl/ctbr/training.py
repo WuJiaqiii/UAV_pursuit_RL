@@ -875,7 +875,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 record["success"] for record in records
             ),
             phase="optimizer",
-            force=progress_display.is_tty,
+            force=True,
         )
         try:
             stats = model.update(buf, aux_pd_coef=aux_pd_coef, distill_coef=distill_coef)
