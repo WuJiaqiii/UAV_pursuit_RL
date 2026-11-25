@@ -18,6 +18,7 @@ from pursuit_rl.ctbr.training import train
 
 
 TASKS = {
+    "near_static": "configs/first_entry_highspeed/14_v13_near_static.json",
     "static": "configs/first_entry_highspeed/01_static.json",
     "tail": "configs/first_entry_highspeed/02_low_tail.json",
     "head_on": "configs/first_entry_highspeed/03_low_head_on.json",
@@ -46,6 +47,14 @@ def make_config(args):
     c = load_config(TASKS[args.task], device=args.device, seed=args.seed)
     preset = PRESETS[args.preset]
     c["num_envs"] = args.num_envs if args.num_envs is not None else 64
+    if getattr(args, "pursuit_v13", False):
+        # V13 is explicit opt-in so the old V12 experimental baselines remain
+        # numerically and semantically unchanged.
+        c["policy"]["relative_position_scale_m"] = 5.0
+        c["policy"]["relative_velocity_scale_mps"] = 10.0
+        c["policy"]["relative_position_encoding"] = "asinh"
+        c["reward"]["progress_mode"] = "initial_normalized"
+        c["training"]["selection_mode"] = "distance_first"
     c["policy"]["history_steps"] = (
         args.history_steps if args.history_steps is not None else 1
     )
@@ -114,6 +123,11 @@ def main(argv=None):
     ap.add_argument("--cpu-threads", type=int, default=1)
     ap.add_argument("--legacy-terminal-records", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--pursuit-v13", action="store_true",
+        help="Use direction-sensitive state, distance-normalized progress, "
+             "and pursuit-first checkpoint ranking.",
+    )
     ap.add_argument("--no-progress", action="store_true", help="Disable live progress display")
     args = ap.parse_args(argv)
     if args.init_from and args.resume:
@@ -123,6 +137,7 @@ def main(argv=None):
         if any(v is not None for v in (
             args.num_envs, args.rollout_steps,
             args.batch_size, args.epochs, args.history_steps,
+            args.pursuit_v13,
         )) or args.legacy_terminal_records:
             ap.error("Resume locks task, parallelism and algorithm hyperparameters")
         _, c, _ = load_checkpoint(args.resume, device=args.device)
@@ -163,6 +178,9 @@ def main(argv=None):
             minibatch=c["training"]["batch_size"],
             epochs=c["training"]["epochs"],
             fast_terminal_records=c["training"]["fast_terminal_records"],
+            selection_mode=c["training"]["selection_mode"],
+            relative_position_encoding=c["policy"]["relative_position_encoding"],
+            progress_mode=c["reward"]["progress_mode"],
         ), indent=2, ensure_ascii=False))
         return None
     root = Path(args.out)
