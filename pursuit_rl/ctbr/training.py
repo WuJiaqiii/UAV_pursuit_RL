@@ -514,66 +514,69 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                     )
                     write_json(root / "gate_failure.json", details)
                     raise ExperimentGateError(details)
-        if validation_profiles:
-            # Match the initial MC critic regression to the *joint* PPO task
-            # distribution, rather than fitting only on the tail task before
-            # starting a four-task rollout.
-            gathered = []
-            initial_calibrations = {}
-            per_task = max(2, math.ceil(tr["mc_episodes"] / len(validation_profiles)))
-            for profile_idx, profile in enumerate(validation_profiles):
-                report, pair = evaluate(
-                    model, profile, per_task,
-                    810000 + c["seed"] + 10007 * profile_idx,
+        if tr["skip_mc_diagnostics"]:
+            emit(root, "critic_warmup_skipped", reason="pure_ppo", critic_updates=0)
+        else:
+            if validation_profiles:
+                # Match the initial MC critic regression to the *joint* PPO task
+                # distribution, rather than fitting only on the tail task before
+                # starting a four-task rollout.
+                gathered = []
+                initial_calibrations = {}
+                per_task = max(2, math.ceil(tr["mc_episodes"] / len(validation_profiles)))
+                for profile_idx, profile in enumerate(validation_profiles):
+                    report, pair = evaluate(
+                        model, profile, per_task,
+                        810000 + c["seed"] + 10007 * profile_idx,
+                        stochastic=True, collect_mc=True,
+                    )
+                    name = profile["task"]["name"]
+                    initial_calibrations[name] = dict(
+                        critic_mc_rmse=report["critic_mc_rmse"],
+                        success_rate=report["success_rate"],
+                    )
+                    if name == c["task"]["name"]:
+                        calibration = report
+                    gathered.append(pair)
+                    progress["mc_physics_steps"] += sum(
+                        round(ep["time"] / c["physics"]["dt"])
+                        for ep in report["episodes_detail"]
+                    )
+                data = (
+                    torch.cat([item[0] for item in gathered]),
+                    torch.cat([item[1] for item in gathered]),
+                )
+                emit(root, "joint_critic_warmup_samples",
+                     episodes_per_task=per_task, tasks=initial_calibrations)
+            else:
+                calibration, data = evaluate(
+                    model, c, tr["mc_episodes"], 810000 + c["seed"],
                     stochastic=True, collect_mc=True,
                 )
-                name = profile["task"]["name"]
-                initial_calibrations[name] = dict(
-                    critic_mc_rmse=report["critic_mc_rmse"],
-                    success_rate=report["success_rate"],
-                )
-                if name == c["task"]["name"]:
-                    calibration = report
-                gathered.append(pair)
                 progress["mc_physics_steps"] += sum(
-                    round(ep["time"] / c["physics"]["dt"])
-                    for ep in report["episodes_detail"]
+                    round(e["time"] / c["physics"]["dt"])
+                    for e in calibration["episodes_detail"]
                 )
-            data = (
-                torch.cat([item[0] for item in gathered]),
-                torch.cat([item[1] for item in gathered]),
+            fit = fit_critic(model, data, tr["critic_updates"], tr["batch_size"])
+            if tr["critic_updates"] > 0:
+                model.critic_policy_match = True
+                progress["critic_needs_calibration"] = False
+            del data
+            heldout, _ = evaluate(
+                model, c, tr["mc_episodes"], 910000 + c["seed"], stochastic=True
             )
-            emit(root, "joint_critic_warmup_samples",
-                 episodes_per_task=per_task, tasks=initial_calibrations)
-        else:
-            calibration, data = evaluate(
-                model, c, tr["mc_episodes"], 810000 + c["seed"],
-                stochastic=True, collect_mc=True,
-            )
+            write_json(root / "critic_warmup_heldout.json", heldout)
             progress["mc_physics_steps"] += sum(
-                round(e["time"] / c["physics"]["dt"])
-                for e in calibration["episodes_detail"]
+                round(e["time"] / c["physics"]["dt"]) for e in heldout["episodes_detail"]
             )
-        fit = fit_critic(model, data, tr["critic_updates"], tr["batch_size"])
-        if tr["critic_updates"] > 0:
-            model.critic_policy_match = True
-            progress["critic_needs_calibration"] = False
-        del data
-        heldout, _ = evaluate(
-            model, c, tr["mc_episodes"], 910000 + c["seed"], stochastic=True
-        )
-        write_json(root / "critic_warmup_heldout.json", heldout)
-        progress["mc_physics_steps"] += sum(
-            round(e["time"] / c["physics"]["dt"]) for e in heldout["episodes_detail"]
-        )
-        emit(
-            root,
-            "critic_warmup",
-            fit=fit,
-            mc_rmse_before_fit=calibration["critic_mc_rmse"],
-            heldout_rmse=heldout["critic_mc_rmse"],
-            heldout_bias=heldout["critic_bias"],
-        )
+            emit(
+                root,
+                "critic_warmup",
+                fit=fit,
+                mc_rmse_before_fit=calibration["critic_mc_rmse"],
+                heldout_rmse=heldout["critic_mc_rmse"],
+                heldout_bias=heldout["critic_bias"],
+            )
         initial, _ = evaluate(
             model, c, tr["validation_episodes"], tr["validation_seed"]
         )
@@ -699,7 +702,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         component_slots = 0
         reward_component_residual_max = torch.zeros((), device=env.device)
         reward_scale_residual_max = torch.zeros((), device=env.device)
-        prediction_positions = torch.empty(ticks, env.n, 3, device=env.device)
+        prediction_positions = (
+            torch.empty(ticks, env.n, 3, device=env.device)
+            if model.predictor_optimizer is not None and tr["prediction_updates_enabled"]
+            else None
+        )
         for tick in range(ticks):
             try:
                 if aux_pd_coef > 0:
@@ -718,7 +725,8 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                             )
                             buf.retention_mask[tick, slot] = True
                 (nobs, npriv), reward, term, trunc, completed = env.step(action, raw)
-                prediction_positions[tick] = target_positions(env).float()
+                if prediction_positions is not None:
+                    prediction_positions[tick] = target_positions(env).float()
                 rollout_physics_steps += env.last_physics_steps
                 component_slots += env.n
                 scaled_total = torch.zeros_like(reward)
@@ -964,25 +972,30 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             progress["validation_physics_steps"] += sum(
                 round(e["time"] / env.dt) for e in report["episodes_detail"]
             )
-            cal, _ = evaluate(
-                model,
-                c,
-                tr["mc_episodes"],
-                810000 + c["seed"] + progress["ppo_updates"],
-                stochastic=True,
-            )
-            write_json(root / f"calibration_{progress['physics_steps']}.json", cal)
-            progress["mc_physics_steps"] += sum(
-                round(e["time"] / env.dt) for e in cal["episodes_detail"]
-            )
-            emit(
-                root,
-                "validation",
-                success_rate=report["success_rate"],
-                unsafe_entry_rate=report["unsafe_entry_rate"],
-                stochastic_mc_rmse=cal["critic_mc_rmse"],
-                stochastic_bias=cal["critic_bias"],
-            )
+            if tr["skip_mc_diagnostics"]:
+                emit(root, "validation", success_rate=report["success_rate"],
+                     unsafe_entry_rate=report["unsafe_entry_rate"],
+                     stochastic_mc_rmse=None, stochastic_bias=None)
+            else:
+                cal, _ = evaluate(
+                    model,
+                    c,
+                    tr["mc_episodes"],
+                    810000 + c["seed"] + progress["ppo_updates"],
+                    stochastic=True,
+                )
+                write_json(root / f"calibration_{progress['physics_steps']}.json", cal)
+                progress["mc_physics_steps"] += sum(
+                    round(e["time"] / env.dt) for e in cal["episodes_detail"]
+                )
+                emit(
+                    root,
+                    "validation",
+                    success_rate=report["success_rate"],
+                    unsafe_entry_rate=report["unsafe_entry_rate"],
+                    stochastic_mc_rmse=cal["critic_mc_rmse"],
+                    stochastic_bias=cal["critic_bias"],
+                )
             if validation_profiles:
                 joint, extra_steps = evaluate_generalization(
                     model, validation_profiles, tr["validation_episodes"],
