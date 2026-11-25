@@ -92,6 +92,8 @@ DEFAULT = {
         "initialization_success_floor": 0.0,
         "zero_initial_actor_mean": False,
         "save_every_updates": 1,
+        "checkpoint_every_updates": 1,
+        "fast_terminal_records": False,
         "prediction_updates_enabled": True,
         "minimum_success": 0.95,
         "teacher_method": "pn_hybrid",
@@ -288,7 +290,9 @@ def validate(c):
         raise ValueError("Invalid critical attitude reset settings")
     if reward["actuator_risk"] > 0 and not safe["predictive_enabled"]:
         raise ValueError("actuator_risk reward needs predictive_enabled")
-    for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "initialization_episodes"):
+    if type(tr["fast_terminal_records"]) is not bool:
+        raise ValueError("training.fast_terminal_records must be boolean")
+    for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "checkpoint_every_updates", "initialization_episodes"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError(f"Invalid training.{key}")
     for key in ("actor_lr", "critic_lr", "discount_time_s", "advantage_time_s", "bc_segment_seconds"):
