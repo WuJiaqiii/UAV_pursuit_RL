@@ -121,6 +121,14 @@ def evaluate(
                         .cpu()
                         .tolist(),
                     )
+                    initial_distance = math.sqrt(
+                        sum(float(x) ** 2 for x in rec["start_rel_pos"])
+                    )
+                    rec["initial_distance_m"] = initial_distance
+                    rec["fractional_closure"] = (
+                        1.0 - rec["minimum_distance"] /
+                        max(initial_distance, 1e-6)
+                    )
                     records.append(rec)
                 if bool(env.finished.all()):
                     break
@@ -220,6 +228,8 @@ def evaluate(
         mean_entry_time_s=avg("entry_time_s", successes),
         mean_entry_relative_speed_mps=avg("entry_relative_speed_mps", successes),
         mean_minimum_distance_m=avg("minimum_distance"),
+        mean_initial_distance_m=avg("initial_distance_m"),
+        mean_fractional_closure=avg("fractional_closure"),
         mean_position_rmse=avg("position_rmse"),
         mean_relative_velocity_rmse=avg("relative_velocity_rmse"),
         mean_action_saturation_fraction=avg("action_saturation_fraction"),
