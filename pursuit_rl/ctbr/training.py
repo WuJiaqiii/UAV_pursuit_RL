@@ -504,10 +504,28 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             origin = "random_initial"
             # The teacher uses only current kinematics (first 21 features).
             with torch.no_grad():
-                model.actor[0].weight[:, 21:] = 0
-                if tr.get("zero_initial_actor_mean", False):
-                    model.actor[-1].weight.zero_()
+                if tr["actor_initialization"] == "small_gain":
+                    # A zero output head blocks gradients to ALL preceding
+                    # actor layers on the first PPO update. Retain meaningful
+                    # body-rate, thrust and action-history features from the
+                    # first update while staying near the neutral CTBR command.
+                    torch.nn.init.orthogonal_(
+                        model.actor[-1].weight, gain=0.02
+                    )
                     model.actor[-1].bias.zero_()
+                else:
+                    # Strictly historical initialization for ablations.
+                    model.actor[0].weight[:, 21:] = 0
+                    if tr.get("zero_initial_actor_mean", False):
+                        model.actor[-1].weight.zero_()
+                        model.actor[-1].bias.zero_()
+            emit(
+                root, "actor_initialization",
+                mode=tr["actor_initialization"],
+                output_layer_gain=(
+                    0.02 if tr["actor_initialization"] == "small_gain" else 0.0
+                ),
+            )
             if tr["bc_updates"]:
                 origin, bc_report = run_bc_initialization(
                     c, model, root, ckpt, progress, transfer=False,
