@@ -452,7 +452,7 @@ def run(argv=None):
     previous_elapsed = float(prior.get("elapsed_wall_s", 0))
     started = time.monotonic()
     current_id = None
-    states = {}
+    states = {item["id"]: default_state(item) for item in runs}
     resume_files = {}
     display = CampaignDisplay(interval=args.log_interval)
     logs = root / "logs"
