@@ -266,3 +266,14 @@ def test_success_rate_wilson_interval_has_nonzero_width_at_edges():
     assert 0.92 < lo2 < 0.96
     lower, upper = curriculum.wilson95(52, 64)
     assert lower < 52/64 < upper
+
+
+def test_all_historical_registered_difficulty_groups_available():
+    from scripts.run_pure_ppo import TASKS
+    from scripts.evaluate_v12_curriculum_difficulties import tier
+    assert len(TASKS) == 13
+    assert tier("static") == "static"
+    assert tier("random") == "low"
+    assert tier("medium_random") == "medium"
+    assert tier("high_random") == "high"
+    assert tier("extreme_random") == "extreme"
