@@ -22,6 +22,15 @@ TASKS = {
     "tail": "configs/first_entry_highspeed/02_low_tail.json",
     "head_on": "configs/first_entry_highspeed/03_low_head_on.json",
     "random": "configs/first_entry_highspeed/04_low_random.json",
+    "medium_tail": "configs/first_entry_highspeed/05_medium_tail.json",
+    "medium_head_on": "configs/first_entry_highspeed/06_medium_head_on.json",
+    "medium_random": "configs/first_entry_highspeed/07_medium_random.json",
+    "high_tail": "configs/first_entry_highspeed/08_high_tail.json",
+    "high_head_on": "configs/first_entry_highspeed/09_high_head_on.json",
+    "high_random": "configs/first_entry_highspeed/10_high_random.json",
+    "extreme_tail": "configs/first_entry_highspeed/11_extreme_tail.json",
+    "extreme_head_on": "configs/first_entry_highspeed/12_extreme_head_on.json",
+    "extreme_random": "configs/first_entry_highspeed/13_extreme_random.json",
 }
 PRESETS = {
     "smoke": {"physics_steps": 100_000, "validation_every": 100_000, "validation_episodes": 8},
@@ -33,7 +42,7 @@ PRESETS = {
 
 def make_config(args):
     if args.task not in TASKS:
-        raise ValueError("New runs require --task static|tail|head_on|random")
+        raise ValueError("Unknown first-entry task profile")
     c = load_config(TASKS[args.task], device=args.device, seed=args.seed)
     preset = PRESETS[args.preset]
     c["num_envs"] = args.num_envs if args.num_envs is not None else 64
