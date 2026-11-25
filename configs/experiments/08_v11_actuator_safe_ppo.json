@@ -8,26 +8,28 @@
     "03_low_head_on": "configs/first_entry_highspeed/03_low_head_on.json",
     "04_low_random": "configs/first_entry_highspeed/04_low_random.json"
   },
-  "num_envs": 32,
   "teacher_method": "pd_observed",
   "evaluation_seed_offset": 279000,
+  "num_envs": 48,
   "training_defaults": {
-    "bc_segment_seconds": 4,
-    "bc_samples": 10000,
-    "bc_stride": 2,
-    "bc_updates": 0,
-    "bc_rounds": 1,
-    "initialization_success_floor": 0,
-    "rollout_steps": 256,
-    "batch_size": 512,
-    "epochs": 3,
-    "validation_seed": 78000,
-    "mc_calibration_every_updates": 0,
-    "mc_calibration_updates": 8,
-    "prediction_updates_enabled": false,
-    "minimum_success": 0.95,
-    "save_every_updates": 50,
-    "validation_episodes": 16
+      "bc_segment_seconds": 4,
+      "bc_samples": 10000,
+      "bc_stride": 2,
+      "bc_updates": 0,
+      "bc_rounds": 1,
+
+      "rollout_steps": 256,
+      "batch_size": 512,
+      "epochs": 3,
+
+      "validation_seed": 78000,
+      "mc_calibration_every_updates": 0,
+      "mc_calibration_updates": 8,
+      "prediction_updates_enabled": false,
+
+      "minimum_success": 0.95,
+      "save_every_updates": 50,
+      "validation_episodes": 16
   },
   "stages": {
     "pilot": {

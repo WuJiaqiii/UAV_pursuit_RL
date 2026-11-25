@@ -1,0 +1,97 @@
+{
+  "schema": "v12-pure-ppo-curriculum-v1",
+  "description": "From-scratch C0-C7 pure PPO curriculum",
+  "defaults": {
+    "preset": "standard",
+    "num_envs": 64,
+    "rollout_steps": 128,
+    "batch_size": 512,
+    "epochs": 2,
+    "history_steps": 1,
+    "legacy_terminal_records": false
+  },
+  "stages": [
+    {
+      "name": "C0: Static",
+      "task": "static",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 5000000
+    },
+    {
+      "name": "C1: Low Tail",
+      "task": "tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 5000000
+    },
+    {
+      "name": "C2: Low Head-on",
+      "task": "head_on",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 5000000
+    },
+    {
+      "name": "C3: Low Random",
+      "task": "random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 5000000
+    },
+    {
+      "name": "C4: Medium Tail",
+      "task": "medium_tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 5000000
+    },
+    {
+      "name": "C5: Medium Random",
+      "task": "medium_random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 8000000
+    },
+    {
+      "name": "C6: High Tail",
+      "task": "high_tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 10000000
+    },
+    {
+      "name": "C7: High Random",
+      "task": "high_random",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 12000000
+    }
+  ],
+  "evaluation": {
+    "profiles": [
+      "static",
+      "tail",
+      "head_on",
+      "random",
+      "medium_tail",
+      "medium_random",
+      "high_tail",
+      "high_random"
+    ],
+    "episodes": 16,
+    "seed": 950001,
+    "gate_success_rate": 0.8,
+    "gate_mode": "record_only"
+  },
+  "compare_direct_baseline": false,
+  "start_from_required": false
+}
