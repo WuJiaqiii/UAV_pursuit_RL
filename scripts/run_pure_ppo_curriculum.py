@@ -22,7 +22,7 @@ import time
 
 from pursuit_rl.ctbr.checkpoint import load as load_checkpoint
 from pursuit_rl.ctbr.checkpoint import source_fingerprint
-from pursuit_rl.ctbr.config import load as load_config
+from pursuit_rl.ctbr.config import load as load_config, transfer_interface
 from pursuit_rl.ctbr.evaluation import evaluate
 from scripts.run_pure_ppo import TASKS
 from scripts import run_pure_ppo as pure_runner
@@ -34,7 +34,7 @@ EVAL_KEYS = frozenset(("profiles", "episodes", "seed", "gate_success_rate", "gat
 GATE_MODES = frozenset(("record_only", "stop"))
 PLAN_KEYS = frozenset((
     "schema", "description", "defaults", "stages", "evaluation",
-    "compare_direct_baseline",
+    "compare_direct_baseline", "start_from_required", "initial_parent_task",
 ))
 FIELD_NAMES = (
     "arm", "stage", "stage_index", "seed", "train_task", "evaluated_task",
@@ -84,6 +84,14 @@ def validate_plan(plan, device):
         raise ValueError("Evaluation gate success threshold must lie in [0,1]")
     if mode not in GATE_MODES:
         raise ValueError("Invalid curriculum gate_mode")
+    requires_parent = plan.get("start_from_required", False)
+    if type(requires_parent) is not bool:
+        raise ValueError("start_from_required must be boolean")
+    expected_parent = plan.get("initial_parent_task")
+    if expected_parent is not None and expected_parent not in TASKS:
+        raise ValueError("Unknown initial_parent_task")
+    if expected_parent is not None and not requires_parent:
+        raise ValueError("initial_parent_task requires start_from_required")
     compare = plan.get("compare_direct_baseline", True)
     if type(compare) is not bool:
         raise ValueError("compare_direct_baseline must be boolean")
@@ -280,6 +288,12 @@ def run(argv=None):
     parser.add_argument("--resume-existing", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument(
+        "--start-from",
+        help="Existing pure-PPO best_current.pt for the FIRST curriculum stage. "
+             "Used for C3-to-C4 or high-to-extreme continuation, never in-place "
+             "modification of an already-running campaign.",
+    )
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--log-interval", type=float, default=10.0)
     parser.add_argument("--cpu-threads", type=int, default=1)
@@ -313,6 +327,62 @@ def run(argv=None):
     plan_path = Path(args.plan).resolve()
     plan = base._read_json(plan_path)
     runs, evaluation = validate_plan(plan, args.device)
+    if plan.get("start_from_required", False) and not args.start_from and not args.dry_run:
+        parser.error(
+            "This continuation curriculum requires --start-from PATH to the "
+            "preceding stage's best_current.pt"
+        )
+    external_parent = None
+    if args.start_from:
+        # A single checkpoint cannot correctly initialize different train seeds.
+        seeds = {x["seed"] for x in runs}
+        if len(seeds) != 1:
+            parser.error(
+                "--start-from supports one training seed per campaign; "
+                "use a separate campaign for each distinct parent seed"
+            )
+        checkpoint_path = Path(args.start_from).resolve()
+        if not args.dry_run:
+            if not checkpoint_path.is_file():
+                parser.error(f"Missing --start-from checkpoint: {checkpoint_path}")
+            model, prior_config, parent_data = load_checkpoint(
+                checkpoint_path, device="cpu"
+            )
+            if (
+                prior_config["prediction"]["enabled"]
+                or prior_config["safety"]["predictive_enabled"]
+                or prior_config["safety"]["constraint_enabled"]
+                or prior_config["training"]["bc_updates"] != 0
+                or prior_config["training"]["aux_pd_coef"] != 0
+            ):
+                parser.error("External parent must be a pure PPO checkpoint")
+            expected_parent = plan.get("initial_parent_task")
+            if expected_parent is not None:
+                expected_name = load_config(TASKS[expected_parent])["task"]["name"]
+                if prior_config["task"]["name"] != expected_name:
+                    parser.error(
+                        f"Expected parent task {expected_name}, but checkpoint "
+                        f"was trained on {prior_config['task']['name']}"
+                    )
+            if transfer_interface(prior_config) != transfer_interface(runs[0]["config"]):
+                parser.error(
+                    "Parent Actor/Critic architecture, action/observation "
+                    "or physical dynamics are incompatible with C4 training"
+                )
+            external_parent = dict(
+                path=str(checkpoint_path),
+                sha256=base._hash_file(checkpoint_path),
+                task=prior_config["task"]["name"],
+                origin=parent_data.get("origin"),
+                source_fingerprint=parent_data.get("source_fingerprint"),
+            )
+            if external_parent["origin"] == "random_initial":
+                print(
+                    "[CURRICULUM] WARNING: external checkpoint is random_initial; "
+                    "higher difficulty transfer may have no learned tracking skill.",
+                    flush=True,
+                )
+            del model
     if any(i["task"] not in evaluation["profiles"] for i in runs):
         parser.error("Each curriculum task must be in evaluation.profiles")
     manifest = dict(
@@ -323,6 +393,9 @@ def run(argv=None):
         source_fingerprint=source_fingerprint(),
         device=args.device,
         evaluation=evaluation,
+        external_parent=external_parent,
+        # A plan marked continuation cannot silently become from-scratch.
+        start_from_required=bool(plan.get("start_from_required", False)),
         runs=[dict(
             id=x["id"], arm=x["arm"], stage=x["stage"],
             task=x["task"], seed=x["seed"], budget=x["budget"],
@@ -417,13 +490,20 @@ def run(argv=None):
                     state["status"] = "blocked_by_gate"
                     snapshot("gate_failed", force=True)
                     return base._read_json(state_file)
+            # Only the first curriculum course may inherit from a
+            # previously completed and separate C3 (or high random) campaign.
+            if (
+                parent_id is None and item["arm"] == "curriculum"
+                and item["stage_index"] == 1 and external_parent is not None
+            ):
+                parent_ckpt = Path(external_parent["path"])
             directory = root / item["id"]
             # Parent checkpoint ancestry is persistent across interruption.
             # Place this outside the run dir because the standalone PPO
             # trainer refuses a nonempty directory for a fresh run.
             if parent_ckpt:
                 dependency = dict(
-                    parent_id=parent_id,
+                    parent_id=parent_id if parent_id is not None else "external",
                     parent_sha256=base._hash_file(parent_ckpt),
                     parent_path=str(parent_ckpt.resolve()),
                 )
