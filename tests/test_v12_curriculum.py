@@ -324,7 +324,7 @@ def test_external_parent_is_used_exactly_once_and_ancestry_is_locked(
         dict(name="C4 Medium Tail", task="medium_tail", seeds=[42], physics_steps=40),
         dict(name="C5 Medium Random", task="medium_random", seeds=[42], physics_steps=40),
     ]
-    plan["evaluation"]["profiles"] = ["medium_tail", "medium_random"]
+    plan["evaluation"]["profiles"] = ["random", "medium_tail", "medium_random"]
     plan["compare_direct_baseline"] = False
     plan["start_from_required"] = True
     plan["initial_parent_task"] = "random"
