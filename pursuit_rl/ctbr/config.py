@@ -94,6 +94,7 @@ DEFAULT = {
         "initialization_episodes": 32,
         "initialization_success_floor": 0.0,
         "checkpoint_selection": "legacy",
+        "actor_initialization": "legacy",
         "zero_initial_actor_mean": False,
         "save_every_updates": 1,
         "checkpoint_every_updates": 1,
@@ -262,6 +263,8 @@ def validate(c):
             raise ValueError(f"Invalid training.{key}")
     if type(tr["bc_rounds"]) is not int or tr["bc_rounds"] < 1:
         raise ValueError("Invalid training.bc_rounds")
+    if tr["actor_initialization"] not in ("legacy", "small_gain"):
+        raise ValueError("Invalid training.actor_initialization")
     if tr["checkpoint_selection"] not in ("legacy", "pursuit_progress"):
         raise ValueError("Invalid training.checkpoint_selection")
     if tr["bc_updates"] > 0 and tr["bc_rounds"] > tr["bc_updates"]:
