@@ -201,6 +201,9 @@ def test_full_mocked_campaign_transfers_parent_and_reports_each_difficulty(
     restored = curriculum.run(args + ["--resume-existing"])
     assert restored["completed_runs"] == 3
     assert restored["percent"] == pytest.approx(100)
+    status = curriculum.run(["--out", str(output), "--status"])
+    assert status["percent"] == pytest.approx(100)
+    assert "Difficulty matrix" in capsys.readouterr().out
 
     # Altering plan invalidates manifest; the campaign must not rerun silently.
     plan["evaluation"]["seed"] += 100
