@@ -41,6 +41,7 @@ def test_legacy_default_unchanged_and_v13_is_explicit_optin():
     assert old["training"]["selection_mode"] == "legacy"
     assert old["reward"]["progress_mode"] == "saturated"
     assert new["policy"]["relative_position_encoding"] == "asinh"
+    assert new["policy"]["relative_frame"] == "body"
     assert new["policy"]["relative_position_scale_m"] == 5.0
     assert new["policy"]["relative_velocity_scale_mps"] == 10.0
     assert new["reward"]["progress_mode"] == "initial_normalized"
