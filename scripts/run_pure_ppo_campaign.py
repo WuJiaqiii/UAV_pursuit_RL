@@ -47,7 +47,7 @@ DEFAULTS_KEYS = frozenset((
     "relative_position_mode", "relative_position_scale_m",
     "relative_velocity_scale_mps", "progress_mode",
     "progress_distance_floor_m", "checkpoint_selection",
-    "initial_std", "exploration_time_s",
+    "initial_std", "exploration_time_s", "actor_initialization",
 ))
 STAGE_KEYS = frozenset(("name", "task", "seeds", "preset", "physics_steps"))
 PROGRESS_SCHEMA = "v12-pure-ppo-campaign-progress-v1"
@@ -119,6 +119,7 @@ def expand_plan(plan, device):
                 history_steps=defaults.get("history_steps"),
                 initial_std=defaults.get("initial_std"),
                 exploration_time_s=defaults.get("exploration_time_s"),
+                actor_initialization=defaults.get("actor_initialization"),
                 relative_position_mode=defaults.get("relative_position_mode"),
                 relative_position_scale_m=defaults.get("relative_position_scale_m"),
                 relative_velocity_scale_mps=defaults.get("relative_velocity_scale_mps"),
@@ -330,6 +331,7 @@ def run_command(item, directory, device, resume_checkpoint=None):
         "--progress-mode", config["reward"]["progress_mode"],
         "--progress-distance-floor-m", str(config["reward"]["progress_distance_floor_m"]),
         "--checkpoint-selection", config["training"]["checkpoint_selection"],
+        "--actor-initialization", config["training"]["actor_initialization"],
     ]
     if config["training"]["fast_terminal_records"] is False:
         command.append("--legacy-terminal-records")
