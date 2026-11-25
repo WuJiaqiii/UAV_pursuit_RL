@@ -53,6 +53,7 @@ def make_config(args):
         c["policy"]["relative_position_scale_m"] = 5.0
         c["policy"]["relative_velocity_scale_mps"] = 10.0
         c["policy"]["relative_position_encoding"] = "asinh"
+        c["policy"]["relative_frame"] = "body"
         c["reward"]["progress_mode"] = "initial_normalized"
         c["training"]["selection_mode"] = "distance_first"
     c["policy"]["history_steps"] = (
