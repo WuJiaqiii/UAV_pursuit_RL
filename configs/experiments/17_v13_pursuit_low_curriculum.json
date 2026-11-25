@@ -1,6 +1,6 @@
 {
   "schema": "v12-pure-ppo-curriculum-v1",
-  "description": "V13 from-scratch, PPO-only active-pursuit convergence diagnosis; no teacher, LSTM, predictor or safety Critic; opt-in observation/reward/selection fixes.",
+  "description": "V13 from-scratch, PPO-only active-pursuit convergence diagnosis; no teacher, LSTM, predictor or safety Critic; opt-in observation/reward/selection fixes. Strict mastery gating prevents wasting high-difficulty rollout if near-static fails.",
   "defaults": {
     "preset": "standard",
     "num_envs": 64,
@@ -56,6 +56,6 @@
     "episodes": 24,
     "seed": 951001,
     "gate_success_rate": 0.75,
-    "gate_mode": "record_only"
+    "gate_mode": "stop"
   }
 }
