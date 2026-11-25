@@ -71,6 +71,29 @@ One unattended Pilot **without the V11 campaign**:
       --num-envs 64 --batch-size 512 --rollout-steps 128
     tail -f runs/v12_static_pilot.log
 
+## Live training progress
+
+The trainer displays a tqdm-style progress bar on an interactive terminal.
+The main counter is **aggregate physics steps**, exactly matching the
+trainer's stopping budget (not PPO update count and not simulated seconds
+for a single drone). It refreshes during rollout collection and changes its
+phase to optimizer or validation when those stages are running.
+
+Example:
+
+    Physics [████████████░░░░░░░░░░]  54.2% 1.08M/2.00M | PPO 169 | 42.6k steps/s | Elapsed 00:07:42 | ETA 00:06:31 | Success 76.3% (312 eps) | rollout
+
+When stdout/stderr are redirected by the unattended launcher, the display
+automatically switches to concise `[progress]` snapshots every 10 seconds,
+plus a final line. This avoids carriage-return spam in the log:
+
+    tail -f runs/v12_static_pilot.log
+    grep '\[progress\]' runs/v12_static_pilot.log | tail
+
+The run's machine-readable `metrics.jsonl` continues to contain every PPO
+update and cumulative progress fields. To suppress the display while retaining
+metrics, pass `--no-progress` to `scripts.run_pure_ppo`.
+
 Then run a separate Tail from scratch:
 
     bash scripts/launch_pure_ppo.sh tail pilot runs/v12_tail_scratch
@@ -126,7 +149,7 @@ Each event=ppo_update in the training metrics file includes:
 - rollout_wall_s: batched dynamics + environment interaction;
 - optimizer_wall_s: policy/critic gradient update;
 - physics_steps_per_rollout_second: actual environment throughput;
-- training_wall_s: elapsed core PPO trainer time.
+- training_wall_s: elapsed core PPO trainer time.\n- physics_steps, target_physics_steps, progress_fraction, completed_episodes_total and success_rate_total: cumulative progress and episode statistics.
 
 The single-run pure_ppo_summary.json records total wall time including
 setup, validation, and checkpointing, allowing direct bottleneck comparison.
