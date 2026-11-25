@@ -40,7 +40,19 @@ The actual code suggests several contributing mechanisms:
    to discover this reliably over long distances. Head-on can be solved
    passively by the approaching target, so head-on successes alone are
    insufficient evidence of active pursuit.
-6. **Numerical stability is not convergence**: the runs did not show
+6. **High-speed trimmed-start / neutral-control mismatch**: Medium/High
+   Tail/Random profiles use trimmed_initialization=true. They start with
+   a speed-dependent tilted attitude and specific thrust to balance quadratic
+   drag. A zero-mean Actor action is nevertheless decoded as NOMINAL HOVER
+   thrust and zero body rates, not the same cruise trim. At 50m/s with
+   drag coefficient .005 the nominal drag acceleration is 12.5m/s^2,
+   requiring about sqrt(9.81^2+12.5^2)=15.9m/s^2 specific thrust at trim.
+   The neutral action commands only 9.81m/s^2. The resulting flight
+   transient makes high-speed exploration harder even if the initial state
+   was physically valid. Do not patch dynamics or silently mix a PD
+   controller into pure PPO to conceal this; test a distinct trim-relative
+   action interface as a future controlled ablation.
+7. **Numerical stability is not convergence**: the runs did not show
    general NaN or runaway KL, but zero success and sparse completions mean
    the policy-gradient signal is poorly aligned with the task.
 
