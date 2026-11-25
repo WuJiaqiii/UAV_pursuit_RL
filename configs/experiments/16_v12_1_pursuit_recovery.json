@@ -1,0 +1,59 @@
+{
+  "schema": "v12-pure-ppo-curriculum-v1",
+  "description": "V12.1 debug-first direct CTBR PPO recovery: near static -> static -> low tail; randomized orientation, active pursuer closure reward, asinh relative state, chase-aware model selection. No teacher, LSTM, BC, or safe Cost Critic.",
+  "defaults": {
+    "preset": "standard",
+    "num_envs": 64,
+    "rollout_steps": 128,
+    "batch_size": 512,
+    "epochs": 2,
+    "history_steps": 1,
+    "legacy_terminal_records": false,
+    "progress_mode": "pursuer_closure_normalized",
+    "progress_distance_floor_m": 1,
+    "checkpoint_selection": "pursuit_progress",
+    "relative_position_mode": "asinh",
+    "relative_position_scale_m": 8,
+    "relative_velocity_scale_mps": 15
+  },
+  "stages": [
+    {
+      "name": "R0: Near Static",
+      "task": "near_static",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 6000000
+    },
+    {
+      "name": "R1: Static",
+      "task": "static",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 8000000
+    },
+    {
+      "name": "R2: Low Tail",
+      "task": "tail",
+      "seeds": [
+        42
+      ],
+      "physics_steps": 8000000
+    }
+  ],
+  "evaluation": {
+    "profiles": [
+      "near_static",
+      "static",
+      "tail",
+      "head_on",
+      "random"
+    ],
+    "episodes": 24,
+    "seed": 980001,
+    "gate_success_rate": 0.8,
+    "gate_mode": "record_only"
+  },
+  "compare_direct_baseline": false
+}
