@@ -260,7 +260,8 @@ class CTBRBatch:
         self.initial_target_vel[mask] = t.vel[mask].float()
         self.minimum_distance[mask] = norm(t.pos - u.pos)[mask].float()
         self.target_history[mask] = 0
-        self.append_target_history(mask)
+        if self.config["prediction"]["enabled"]:
+            self.append_target_history(mask)
         return self.observe()
 
     def append_target_history(self, mask):
@@ -467,11 +468,19 @@ class CTBRBatch:
         records = []
         counts = torch.zeros(self.n, dtype=torch.long, device=self.device)
         tilt_failures = torch.zeros(self.n, dtype=torch.bool, device=self.device)
+        # GPU->CPU synchronization once per 100 Hz decision, instead of once
+        # per 1 kHz physics tick. Physics/termination semantics are unchanged.
+        fast_records = self.config["training"]["fast_terminal_records"]
+        if fast_records:
+            self._pending_terminal_codes = torch.zeros(
+                self.n, device=self.device, dtype=torch.uint8
+            )
         for tick in range(self.decision_steps):
             counts += (~self.finished).long()
             step_reward, done, completed = self._physics_step(
                 action,
                 derivative_cost if tick == 0 else torch.zeros_like(derivative_cost),
+                defer_records=fast_records,
             )
             discount = self.physics_gamma**tick
             reward += discount * step_reward
@@ -485,6 +494,8 @@ class CTBRBatch:
                 )
             terminated |= done
             records.extend(completed)
+        if fast_records:
+            records = self._finish_pending_records()
         self.last_safety_cost = (
             safety["risk_cost_weight"] * risk +
             safety["failure_cost"] * tilt_failures.float()
@@ -493,12 +504,77 @@ class CTBRBatch:
         self.last_physics_steps_per_env = counts
         self.reward_components = components
         self.reward_components_unscaled = components_unscaled
-        self.append_target_history(started)
+        if self.config["prediction"]["enabled"]:
+            self.append_target_history(started)
         obs, priv = self.observe()
         self.final_obs, self.final_priv = obs, priv
         return (obs, priv), reward, terminated, torch.zeros_like(terminated), records
 
-    def _physics_step(self, action, derivative_cost):
+    def _finish_pending_records(self):
+        """Materialize only newly completed episodes, one contiguous D2H copy.
+
+        Every slot is frozen at its first terminal physics tick, so its
+        accumulated metrics and relative velocity remain exact at the end of
+        the same policy decision. Terminal reason priority mirrors the legacy
+        _physics_step record builder.
+        """
+        codes = self._pending_terminal_codes
+        ids = torch.nonzero(codes, as_tuple=False).flatten()
+        if ids.numel() == 0:
+            return []
+        u, t = self.plant.pursuer, self.plant.target
+        denominator = self.ticks.clamp_min(1)
+        elapsed = self.steps.float() * self.dt
+        data = torch.stack((
+            codes.float(),
+            elapsed,
+            self.episode_return_unscaled,
+            self.episode_return_scaled,
+            self.minimum_distance,
+            torch.sqrt(self.sum_p2 / denominator),
+            torch.sqrt(self.sum_v2 / denominator),
+            torch.linalg.vector_norm(t.vel - u.vel, dim=1).float(),
+            self.maximum_target_speed,
+            self.maximum_target_accel,
+            self.maximum_target_jerk,
+            self.max_tilt_seen * (180 / math.pi),
+            self.sat_count / denominator,
+        ), 1)[ids].cpu().tolist()
+        slot_ids = ids.cpu().tolist()
+        names = {
+            1: "success", 2: "speed", 3: "outside", 4: "tilt",
+            6: "invalid_target", 7: "timeout", 8: "unsafe_entry",
+        }
+        rows = []
+        for slot, values in zip(slot_ids, data):
+            (code, time_s, return_raw, return_scaled, minimum, pos_rmse,
+             vel_rmse, entry_speed, speed, acceleration, jerk, tilt,
+             saturation) = values
+            reason = names[int(code)]
+            crossed = reason in ("success", "unsafe_entry")
+            rows.append(dict(
+                slot=slot,
+                task=self.config["task"]["name"],
+                success=reason == "success",
+                reason=reason,
+                time=time_s,
+                return_unscaled=return_raw,
+                return_scaled=return_scaled,
+                minimum_distance=minimum,
+                position_rmse=pos_rmse,
+                relative_velocity_rmse=vel_rmse,
+                entry_time_s=time_s if reason == "success" else None,
+                entry_relative_speed_mps=entry_speed if crossed else None,
+                unsafe_entry=reason == "unsafe_entry",
+                target_max_speed=speed,
+                target_max_accel=acceleration,
+                target_max_jerk=jerk,
+                maximum_tilt_deg=tilt,
+                action_saturation_fraction=saturation,
+            ))
+        return rows
+
+    def _physics_step(self, action, derivative_cost, defer_records=False):
         active = ~self.finished
         p, c, r = self.config["physics"], self.config["task"], self.config["reward"]
         u, t = self.plant.pursuer, self.plant.target
@@ -624,6 +700,27 @@ class CTBRBatch:
         self.episode_return_unscaled += reward_unscaled
         self.episode_return_scaled += reward
         self.finished |= done
+        if defer_records:
+            code = torch.where(
+                invalid, 6,
+                torch.where(
+                    outside, 3,
+                    torch.where(
+                        speed > p["max_speed"], 2,
+                        torch.where(
+                            failure, 4,
+                            torch.where(
+                                unsafe_entry, 8,
+                                torch.where(success, 1, 7),
+                            ),
+                        ),
+                    ),
+                ),
+            ).to(dtype=torch.uint8)
+            self._pending_terminal_codes = torch.where(
+                done, code, self._pending_terminal_codes
+            )
+            return reward, done, []
         records = []
         if bool(done.any()):
             ids = done.nonzero(as_tuple=True)[0].cpu().tolist()
