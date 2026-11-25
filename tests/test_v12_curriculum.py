@@ -366,18 +366,23 @@ def test_external_parent_is_used_exactly_once_and_ancestry_is_locked(
             return 0
 
     def fake_matrix(path, config, item, settings, device):
+        is_parent = item["arm"] == "external"
+        rate = 0.25 if is_parent else 0.75
         return dict(
             id=item["id"], arm=item["arm"], task=item["task"],
             stage=item["stage"], stage_index=item["stage_index"],
             seed=item["seed"], checkpoint=str(path),
             checkpoint_sha256=curriculum.base._hash_file(path),
-            checkpoint_source_fingerprint=source_fingerprint(),
-            own_task_success_rate=0.5, gate_met=False,
+            checkpoint_source_fingerprint=(
+                "prior-branch" if is_parent else source_fingerprint()
+            ),
+            own_task_success_rate=rate, gate_met=rate >= 0.8,
             gate_success_rate=0.8, results=[
-                dict(evaluated_task=profile, episodes=8, successes=4,
-                     success_rate=0.5, tilt_failure_rate=0.,
-                     timeout_rate=0., unsafe_entry_rate=0.,
-                     mean_maximum_tilt_deg=1., maximum_tilt_p95_deg=2.)
+                dict(evaluated_task=profile, episodes=8,
+                     successes=int(8 * rate), success_rate=rate,
+                     tilt_failure_rate=0., timeout_rate=0.,
+                     unsafe_entry_rate=0., mean_maximum_tilt_deg=1.,
+                     maximum_tilt_p95_deg=2.)
                 for profile in settings["profiles"]
             ],
         )
@@ -404,6 +409,20 @@ def test_external_parent_is_used_exactly_once_and_ancestry_is_locked(
     assert manifest["external_parent"]["sha256"] == curriculum.base._hash_file(first)
     assert manifest["external_parent"]["origin"] == "ppo"
     assert (target/"dependencies"/"curr_01_medium_tail_seed42.json").exists()
+    parent_report = json.loads(
+        (target/"external_parent_difficulty_matrix.json").read_text()
+    )
+    assert parent_report["checkpoint_source_fingerprint"] == "prior-branch"
+    first_report = json.loads(
+        (target/"curr_01_medium_tail_seed42"/"difficulty_matrix.json").read_text()
+    )
+    second_report = json.loads(
+        (target/"curr_02_medium_random_seed42"/"difficulty_matrix.json").read_text()
+    )
+    assert first_report["results"][0]["before_success_rate"] == pytest.approx(0.25)
+    assert first_report["results"][0]["learning_gain_pp"] == pytest.approx(50)
+    assert second_report["results"][0]["before_success_rate"] == pytest.approx(0.75)
+    assert second_report["results"][0]["learning_gain_pp"] == pytest.approx(0)
 
     def fail_run(*a, **k):
         raise AssertionError("Completed continuation stages must not restart")
