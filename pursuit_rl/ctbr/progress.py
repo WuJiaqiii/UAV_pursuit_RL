@@ -55,6 +55,7 @@ class TrainingProgress:
     ):
         self.total_steps = max(int(total_steps), 1)
         self.steps = int(initial_steps)
+        self.initial_steps = int(initial_steps)
         self.updates = int(initial_updates)
         self.completed = int(completed_episodes)
         self.successful = int(successful_episodes)
@@ -73,8 +74,6 @@ class TrainingProgress:
         self.started_at = now
         self.last_sample_at = now
         self.last_output_at = now
-        self.last_steps = self.steps
-        self.rate_ema = None
         self.last_line_width = 0
         self.phase = "training"
 
@@ -83,9 +82,11 @@ class TrainingProgress:
         filled = int(round(self.width * fraction))
         bar = "█" * filled + "░" * (self.width - filled)
         elapsed = max(now - self.started_at, 0.0)
-        rate = self.rate_ema
-        if rate is None and elapsed > 0 and self.steps > self.last_steps:
-            rate = (self.steps - self.last_steps) / elapsed
+        # Effective throughput includes optimizer and validation time, so
+        # ETA reflects the full wall-clock training process, not rollout-only
+        # simulator throughput.
+        advanced_steps = max(self.steps - self.initial_steps, 0)
+        rate = advanced_steps / elapsed if elapsed > 0 and advanced_steps > 0 else None
         remaining = max(self.total_steps - self.steps, 0)
         eta = remaining / rate if rate and rate > 0 else None
         success = (
@@ -114,16 +115,6 @@ class TrainingProgress:
             return
         now = self.clock()
         steps = int(steps)
-        delta_steps = steps - self.last_steps
-        delta_time = now - self.last_sample_at
-        if delta_steps > 0 and delta_time > 0:
-            sample_rate = delta_steps / delta_time
-            self.rate_ema = (
-                sample_rate if self.rate_ema is None
-                else 0.25 * sample_rate + 0.75 * self.rate_ema
-            )
-        self.last_steps = steps
-        self.last_sample_at = now
         self.steps = steps
         self.updates = int(updates)
         self.completed = int(completed_episodes)
