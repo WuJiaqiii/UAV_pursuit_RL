@@ -107,7 +107,7 @@ def test_v12_config_is_strictly_pure_ppo_and_minimal():
     assert model.obs_dim == 38
 
 
-def test_minimal_training_from_scratch_with_sparse_checkpoints(tmp_path, monkeypatch):
+def test_minimal_training_from_scratch_with_sparse_checkpoints(tmp_path, monkeypatch, capsys):
     c = case()
     c["num_envs"] = 2
     c["training"].update(
@@ -128,6 +128,7 @@ def test_minimal_training_from_scratch_with_sparse_checkpoints(tmp_path, monkeyp
     assert result["physics_steps"] >= 100
     assert result["training_wall_s"] >= 0
     assert result["mc_physics_steps"] == 0
+    assert "[progress]" in capsys.readouterr().err
     assert not (tmp_path / "fresh/critic_warmup_heldout.json").exists()
     metrics = [
         json.loads(x) for x in (tmp_path / "fresh/metrics.jsonl").read_text().splitlines()
