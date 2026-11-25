@@ -61,7 +61,12 @@ def test_state_direction_is_visible_at_one_meter_and_pd_decodes_exactly():
     obs_old, _ = a.observe()
     obs_new, _ = b.observe()
     rel = (b.plant.target.pos - b.plant.pursuer.pos).float()
-    assert torch.allclose(obs_new[:, :3], torch.asinh(rel / 5), atol=1e-6)
+    rel_body = b.plant.pursuer.rot.transpose(1, 2).bmm(
+        rel.unsqueeze(-1)
+    ).squeeze(-1)
+    assert torch.allclose(
+        obs_new[:, :3], torch.asinh(rel_body / 5), atol=1e-6
+    )
     assert torch.allclose(obs_old[:, :3], rel / 100, atol=1e-6)
     assert obs_new[:, :3].abs().mean() > obs_old[:, :3].abs().mean() * 4
     assert torch.allclose(
