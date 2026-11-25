@@ -111,6 +111,38 @@ Overall progress is weighted by each job's physical training-step budget.
 The evaluation phase is shown separately and adds overhead. ETA is only an
 approximation based on observed wall-clock progress.
 
+## Extended historical difficulty audit (optional)
+
+The four-core-task matrix is executed after every course. To probe the
+previously registered **13 first-entry profiles** (Static, three low-speed,
+three medium-speed, three high-speed and three extreme-speed geometries), run
+a separate *evaluation-only* command **after curriculum training completes**:
+
+~~~bash
+python -m scripts.evaluate_v12_curriculum_difficulties \
+  --campaign runs/v12_curriculum_01 --device cuda \
+  --episodes 32 --seed 970001
+~~~
+
+This evaluates **only the last curriculum stage and its matched direct
+control** by default, rather than running a costly 13-profile matrix after
+each intermediate stage. For all stage checkpoints, pass --all-stages.
+Use --profiles followed by an explicit subset to reduce evaluation time.
+Outputs:
+
+    runs/v12_curriculum_01/extended_difficulty_matrix.json
+    runs/v12_curriculum_01/extended_difficulty_matrix.csv
+
+The JSON contains individual profile success/failure rates and macro tier
+summaries under by_difficulty: static / low / medium / high / extreme.
+The heldout episode seeds are matched between curriculum and direct control;
+these higher-speed tasks are **OOD evaluations**, not extra PPO training
+curricula unless separately registered in the plan.
+
+The base curriculum CSV also includes 95% binomial Wilson intervals for
+each individual profile's success rate. With 64 episodes, intervals remain
+nontrivial; add training seeds 43/44 for defensible comparisons.
+
 ## Resume and scientific controls
 
 The same launcher resumes the existing directory using --resume-existing.
