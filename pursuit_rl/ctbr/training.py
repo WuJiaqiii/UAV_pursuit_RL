@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import numbers
+import time
 from pathlib import Path
 import torch
 from pursuit_rl.learning.buffers import TensorRolloutBuffer
@@ -646,10 +647,12 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
     next_validation = (progress["physics_steps"] // tr["validation_every"] + 1) * tr[
         "validation_every"
     ]
+    training_wall_start = time.perf_counter()
     while (
         progress["physics_steps"] < tr["physics_steps"]
         and not progress["promotion_passed"]
     ):
+        update_wall_start = time.perf_counter()
         # The curriculum changes only the distribution of NEW on-policy
         # resets. Validation and heldout profiles are never modified.
         curriculum = c["safety"]
@@ -806,6 +809,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             records.extend(completed)
             episode_start = term | trunc
             obs, priv = env.reset(episode_start) if completed else (nobs, npriv)
+        rollout_wall_s = time.perf_counter() - update_wall_start
         buf.compute_gae(env.gamma, env.gae_lambda)
         if safety_active:
             buf.compute_cost_gae(cost_gamma, cost_lam)
@@ -822,6 +826,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         )
         try:
             stats = model.update(buf, aux_pd_coef=aux_pd_coef, distill_coef=distill_coef)
+            optimizer_wall_s = time.perf_counter() - update_wall_start - rollout_wall_s
         except Exception as exc:
             if not (root / "first_anomaly.pt").exists():
                 torch.save(
@@ -908,6 +913,12 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 )
                 for name in env.task_counts
             },
+            rollout_wall_s=rollout_wall_s,
+            optimizer_wall_s=optimizer_wall_s,
+            training_wall_s=time.perf_counter() - training_wall_start,
+            physics_steps_per_rollout_second=(
+                rollout_physics_steps / max(rollout_wall_s, 1e-9)
+            ),
             reward_scale=c["reward"]["scale"],
             reward_component_residual_max=float(reward_component_residual_max.item()),
             reward_scale_residual_max=float(reward_scale_residual_max.item()),
@@ -941,10 +952,11 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
                 after=correction["final"],
                 fit=correction["fit"],
             )
-        if (
+        validated_this_update = (
             progress["physics_steps"] >= next_validation
             or progress["physics_steps"] >= tr["physics_steps"]
-        ):
+        )
+        if validated_this_update:
             report, _ = evaluate(
                 model, c, tr["validation_episodes"], tr["validation_seed"]
             )
@@ -1022,7 +1034,12 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
             next_validation = (
                 progress["physics_steps"] // tr["validation_every"] + 1
             ) * tr["validation_every"]
-        save(ckpt / "latest.pt", model, c, progress, "ppo")
+        if (
+            progress["ppo_updates"] % tr["checkpoint_every_updates"] == 0
+            or progress["physics_steps"] >= tr["physics_steps"]
+            or validated_this_update
+        ):
+            save(ckpt / "latest.pt", model, c, progress, "ppo")
         if progress["ppo_updates"] % tr["save_every_updates"] == 0:
             save(
                 ckpt / f"update_{progress['ppo_updates']:05d}.pt",
@@ -1048,6 +1065,7 @@ def train(c, out, resume=None, init_from=None, replay=None, promotion_check=None
         unfinished_episodes=int((env.steps > 0).sum()),
         maximum_unfinished_elapsed_s=float(env.steps.max()) * env.dt,
         source_fingerprint=source_fingerprint(),
+        training_wall_s=time.perf_counter() - training_wall_start,
         physics_hz=1 / env.dt,
         decision_hz=1 / env.decision_dt,
         task_environment_counts=env.task_counts,
