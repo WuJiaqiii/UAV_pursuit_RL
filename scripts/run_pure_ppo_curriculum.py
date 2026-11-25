@@ -43,7 +43,7 @@ FIELD_NAMES = (
     "before_success_rate", "learning_gain_pp",
     "tilt_failure_rate",
     "timeout_rate", "unsafe_entry_rate", "mean_maximum_tilt_deg",
-    "maximum_tilt_p95_deg", "checkpoint", "gate_met",
+    "maximum_tilt_p95_deg", "checkpoint", "best_origin", "gate_met",
 )
 
 
@@ -255,6 +255,7 @@ def _results_csv(reports, path):
                     mean_maximum_tilt_deg=entry["mean_maximum_tilt_deg"],
                     maximum_tilt_p95_deg=entry["maximum_tilt_p95_deg"],
                     checkpoint=report["checkpoint"],
+                    best_origin=report.get("best_origin"),
                     gate_met=report["gate_met"],
                 ))
 
@@ -669,6 +670,7 @@ def run(argv=None):
                     if args.device.startswith("cuda"):
                         import torch
                         torch.cuda.empty_cache()
+            report["best_origin"] = summary.get("best_origin")
             reports[item["id"]] = report
             # Compare BEFORE and AFTER the same stage on identical, held-out
             # episode seeds. The previous stage's full difficulty matrix
@@ -691,6 +693,8 @@ def run(argv=None):
                         if before is not None else None
                     )
                 base._atomic_json(matrix_path, report)
+            else:
+                base._atomic_json(matrix_path, report)
             state["status"] = "completed"
             snapshot(force=True)
             base._atomic_json(root / "curriculum_results.json", dict(
@@ -703,9 +707,19 @@ def run(argv=None):
                 [reports.get(x["id"]) for x in runs],
                 root / "curriculum_success_rates.csv",
             )
+            own_row = next(
+                row for row in report["results"]
+                if row["evaluated_task"] == item["task"]
+            )
+            prior_rate = own_row.get("before_success_rate")
+            prior_label = f"{prior_rate:.1%}" if prior_rate is not None else "n/a"
+            gain = own_row.get("learning_gain_pp")
+            gain_label = f"{gain:+.1f}pp" if gain is not None else "n/a"
             print(
                 f"[CURRICULUM] Stage={item['stage']} arm={item['arm']} "
-                f"seed={item['seed']} own_success={report['own_task_success_rate']:.1%} "
+                f"seed={item['seed']} before={prior_label} "
+                f"after={report['own_task_success_rate']:.1%} "
+                f"gain={gain_label} best_origin={report.get('best_origin')} "
                 f"gate={'PASS' if report['gate_met'] else 'FAIL'}",
                 flush=True,
             )
