@@ -255,3 +255,14 @@ def test_strict_gate_stops_after_failed_first_stage(
     ])
     assert state["status"] == "gate_failed"
     assert len(calls) == 1
+
+
+def test_success_rate_wilson_interval_has_nonzero_width_at_edges():
+    lo, hi = curriculum.wilson95(0, 64)
+    assert lo == pytest.approx(0)
+    assert 0.04 < hi < 0.08
+    lo2, hi2 = curriculum.wilson95(64, 64)
+    assert hi2 == pytest.approx(1)
+    assert 0.92 < lo2 < 0.96
+    lower, upper = curriculum.wilson95(52, 64)
+    assert lower < 52/64 < upper
