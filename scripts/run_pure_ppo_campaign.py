@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +22,22 @@ from types import SimpleNamespace
 from pursuit_rl.ctbr.checkpoint import source_fingerprint
 from pursuit_rl.ctbr.config import fingerprint
 from scripts.run_pure_ppo import PRESETS, TASKS, make_config
+
+def _handle_termination(_signum, _frame):
+    raise KeyboardInterrupt
+
+
+def _pid_alive(pid):
+    if type(pid) is not int or pid < 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
 
 SCHEMA = "v12-pure-ppo-campaign-v1"
 DEFAULT_PLAN = "configs/experiments/10_v12_pure_ppo_campaign.json"
@@ -440,6 +457,10 @@ def run(argv=None):
     display = CampaignDisplay(interval=args.log_interval)
     logs = root / "logs"
     logs.mkdir(exist_ok=True)
+    previous_termination_handler = signal.signal(
+        signal.SIGTERM, _handle_termination
+    )
+
     def snapshot(status="running", force=False):
         elapsed = previous_elapsed + (time.monotonic() - started)
         data = compute_snapshot(runs, states, elapsed, status, current_id)
@@ -448,6 +469,14 @@ def run(argv=None):
         return data
 
     try:
+        previous_child = prior.get("active_run") or {}
+        if (args.resume_existing
+                and previous_child.get("status") == "running"
+                and _pid_alive(previous_child.get("child_pid"))):
+            raise RuntimeError(
+                "Previous training subprocess is still running; stop it "
+                "before resuming the same checkpoint directory."
+            )
         for item in runs:
             state, checkpoint = inspect_run(item, root)
             states[item["id"]] = state
@@ -478,6 +507,8 @@ def run(argv=None):
                     command, stdout=output, stderr=subprocess.STDOUT,
                     env=env,
                 )
+                state["child_pid"] = getattr(child, "pid", None)
+                snapshot(force=True)
                 try:
                     while True:
                         row = cursor.poll()
@@ -498,6 +529,7 @@ def run(argv=None):
             # Final flush after process exit.
             update_from_metrics(state, cursor.poll())
             if code != 0:
+                state["child_pid"] = None
                 state["status"] = "failed"
                 snapshot("failed", force=True)
                 raise RuntimeError(
@@ -512,6 +544,7 @@ def run(argv=None):
             if result.get("physics_steps", 0) < item["budget"]:
                 raise RuntimeError(f"Stage did not exhaust training budget: {item['id']}")
             state["status"] = "completed"
+            state.pop("child_pid", None)
             state["steps"] = item["budget"]
             state["ppo_updates"] = int(result["ppo_updates"])
             state["completed_episodes"] = int(result["completed_episodes"])
@@ -534,6 +567,7 @@ def run(argv=None):
         snapshot("failed", force=True)
         raise
     finally:
+        signal.signal(signal.SIGTERM, previous_termination_handler)
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         lock.close()
 
