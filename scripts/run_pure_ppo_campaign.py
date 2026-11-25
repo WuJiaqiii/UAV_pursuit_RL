@@ -44,6 +44,9 @@ DEFAULT_PLAN = "configs/experiments/10_v12_pure_ppo_campaign.json"
 DEFAULTS_KEYS = frozenset((
     "preset", "num_envs", "rollout_steps", "batch_size",
     "epochs", "history_steps", "legacy_terminal_records",
+    "relative_position_mode", "relative_position_scale_m",
+    "relative_velocity_scale_mps", "progress_mode",
+    "progress_distance_floor_m", "checkpoint_selection",
 ))
 STAGE_KEYS = frozenset(("name", "task", "seeds", "preset", "physics_steps"))
 PROGRESS_SCHEMA = "v12-pure-ppo-campaign-progress-v1"
@@ -113,6 +116,12 @@ def expand_plan(plan, device):
                 batch_size=defaults.get("batch_size"),
                 epochs=defaults.get("epochs"),
                 history_steps=defaults.get("history_steps"),
+                relative_position_mode=defaults.get("relative_position_mode"),
+                relative_position_scale_m=defaults.get("relative_position_scale_m"),
+                relative_velocity_scale_mps=defaults.get("relative_velocity_scale_mps"),
+                progress_mode=defaults.get("progress_mode"),
+                progress_distance_floor_m=defaults.get("progress_distance_floor_m"),
+                checkpoint_selection=defaults.get("checkpoint_selection"),
                 physics_steps=budget,
                 legacy_terminal_records=defaults.get("legacy_terminal_records", False),
             )
@@ -310,6 +319,12 @@ def run_command(item, directory, device, resume_checkpoint=None):
         "--batch-size", str(config["training"]["batch_size"]),
         "--epochs", str(config["training"]["epochs"]),
         "--history-steps", str(config["policy"]["history_steps"]),
+        "--relative-position-mode", config["policy"]["relative_position_mode"],
+        "--relative-position-scale-m", str(config["policy"]["relative_position_scale_m"]),
+        "--relative-velocity-scale-mps", str(config["policy"]["relative_velocity_scale_mps"]),
+        "--progress-mode", config["reward"]["progress_mode"],
+        "--progress-distance-floor-m", str(config["reward"]["progress_distance_floor_m"]),
+        "--checkpoint-selection", config["training"]["checkpoint_selection"],
     ]
     if config["training"]["fast_terminal_records"] is False:
         command.append("--legacy-terminal-records")
