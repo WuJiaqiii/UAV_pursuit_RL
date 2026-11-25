@@ -57,11 +57,13 @@ action credit assignment difficult, although this is a hypothesis to test.
 
 2. Checkpoint selection pursuit_progress:
    score = (actual success fraction,
-            mean episode-normalized closure - 0.35*hard_failure_rate,
+            mean episode-normalized closure - 0.02*hard_failure_rate,
             success-or-timeout fraction).
    The actual success rate remains primary. Progress gains below ~1%
    are not grounds for arbitrary checkpoint replacement. Hard physical
-   failures remain penalized. Legacy selection can be restored at any time.
+   failures are lightly penalized, but the model selector will no longer
+   deliberately prefer a high-frequency safe timeout over a measurably
+   closer zero-success trajectory. Legacy selection can be restored at any time.
 
 3. Observation encoding policy.relative_position_mode=asinh:
    obs_position = asinh(relative_position/scale_m).
