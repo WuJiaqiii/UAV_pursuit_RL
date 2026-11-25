@@ -36,6 +36,9 @@ DEFAULT = {
     "policy": {
         "decision_steps": 10,
         "position_error_cap_m": 0.0,
+        "relative_position_scale_m": 100.0,
+        "relative_velocity_scale_mps": 50.0,
+        "relative_position_encoding": "linear",
         "hidden_actor": [128, 128],
         "hidden_critic": [128, 128],
         "history_steps": 8,
@@ -90,6 +93,7 @@ DEFAULT = {
         "bc_segment_seconds": 0.5,
         "initialization_episodes": 32,
         "initialization_success_floor": 0.0,
+        "selection_mode": "legacy",
         "zero_initial_actor_mean": False,
         "save_every_updates": 1,
         "checkpoint_every_updates": 1,
@@ -134,6 +138,7 @@ DEFAULT = {
         "tilt_guard_lookahead_s": 0.12,
         "rate": 0.01,
         "progress": 0.3,
+        "progress_mode": "saturated",
         "action_derivative": 1e-5,
         "completion_bonus": 10.0,
         "failure": 10.0,
@@ -226,6 +231,10 @@ def validate(c):
         raise ValueError("Invalid decision_steps")
     if pol["position_error_cap_m"] < 0 or type(pol["history_steps"]) is not int or pol["history_steps"] < 1:
         raise ValueError("Invalid position cap or action history")
+    if pol["relative_position_scale_m"] <= 0 or pol["relative_velocity_scale_mps"] <= 0:
+        raise ValueError("Relative position/velocity scales must be positive")
+    if pol["relative_position_encoding"] not in ("linear", "asinh"):
+        raise ValueError("Unsupported Actor-relative-position encoding")
     for key in ("hidden_actor", "hidden_critic"):
         if not pol[key] or any(type(v) is not int or v <= 0 for v in pol[key]):
             raise ValueError(f"Invalid policy.{key}")
@@ -255,6 +264,8 @@ def validate(c):
         raise ValueError("training.bc_rounds cannot exceed bc_updates")
     if not 0 <= tr["aux_pd_coef"] <= 1:
         raise ValueError("training.aux_pd_coef must be in [0, 1]")
+    if reward["progress_mode"] not in ("saturated", "initial_normalized"):
+        raise ValueError("Invalid progress shaping mode")
     if (reward["tilt_guard"] < 0
             or not 0 <= reward["tilt_guard_start_deg"] < p["max_tilt_deg"]
             or not 0 <= reward["tilt_guard_lookahead_s"] <= 1.0):
@@ -294,6 +305,8 @@ def validate(c):
     for key in ("fast_terminal_records", "skip_mc_diagnostics"):
         if type(tr[key]) is not bool:
             raise ValueError(f"training.{key} must be boolean")
+    if tr["selection_mode"] not in ("legacy", "distance_first"):
+        raise ValueError("Invalid training.selection_mode")
     if tr["skip_mc_diagnostics"] and tr["critic_updates"] > 0:
         raise ValueError("Cannot skip MC diagnostics with supervised critic warmup")
     for key in ("rollout_steps", "batch_size", "epochs", "validation_every", "validation_episodes", "mc_episodes", "bc_samples", "bc_stride", "save_every_updates", "checkpoint_every_updates", "initialization_episodes"):
@@ -339,7 +352,7 @@ def validate(c):
     if t["kind"] == "random" and .75 * t["duration"] + 15 >= .5 * (p["max_altitude"]-p["min_altitude"]):
         raise ValueError("Random target could exceed altitude envelope")
     r=c["reward"]
-    if any(v < 0 for v in r.values()) or r["scale"] <= 0:
+    if any(v < 0 for v in r.values() if isinstance(v, (int, float))) or r["scale"] <= 0:
         raise ValueError("Invalid first-entry reward weights")
     return c
 
