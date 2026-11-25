@@ -272,20 +272,39 @@ def evaluate(
     return report, data
 
 
-def score(report):
+def score(report, mode="legacy"):
+    """Select checkpoints with task success first.
+
+    Legacy ranking valued safe timeout above distance. For pursuit experiments
+    this can select a hovering policy which simply waits for the deadline
+    whenever all candidates have zero successes. In distance_first mode,
+    equal-success candidates are ranked by actual closest approach, with
+    non-failure rate as the final tiebreaker. Report both safety and pursuit
+    metrics; this ranking is not a flight-safety guarantee.
+    """
     records = report["episodes_detail"]
     safe_fraction = sum(
         r["reason"] in ("success", "timeout") for r in records
     ) / len(records)
-    if report["successes"]:
-        error = report["mean_entry_time_s"]
-    else:
-        error = report["mean_minimum_distance_m"]
+    if mode == "distance_first":
+        return (
+            report["success_rate"],
+            -report["mean_minimum_distance_m"],
+            safe_fraction,
+        )
+    if mode != "legacy":
+        raise ValueError("Unknown checkpoint selection mode: " + mode)
+    error = (
+        report["mean_entry_time_s"]
+        if report["successes"]
+        else report["mean_minimum_distance_m"]
+    )
     return (report["success_rate"], safe_fraction, -error)
 
 
-def improved(report, best):
-    candidate = score(report)
-    if candidate[:2] != tuple(best[:2]):
-        return candidate[:2] > tuple(best[:2])
-    return candidate[2] - best[2] > max(0.01, 0.01 * abs(best[2]))
+def improved(report, best, mode="legacy"):
+    candidate = score(report, mode=mode)
+    previous = tuple(best)
+    if candidate[:2] != previous[:2]:
+        return candidate[:2] > previous[:2]
+    return candidate[2] - previous[2] > max(0.01, 0.01 * abs(previous[2]))
