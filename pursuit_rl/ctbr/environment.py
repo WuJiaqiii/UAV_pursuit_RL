@@ -374,15 +374,27 @@ class CTBRBatch:
             [c["radius"] / 5.0, c["entry_relative_speed_max_mps"] / 15.0]
         ).expand(self.n, 2)
         policy = self.config["policy"]
-        relative = (t.pos - u.pos).float() / policy["relative_position_scale_m"]
+        relative_position = (t.pos - u.pos).float()
+        relative_velocity = (t.vel - u.vel).float()
+        target_acceleration = t.acc.float()
+        ego_velocity = u.vel.float()
+        if policy["relative_frame"] == "body":
+            world_to_body = u.rot.transpose(1, 2)
+            def in_body(vector):
+                return world_to_body.bmm(vector.unsqueeze(-1)).squeeze(-1)
+            relative_position = in_body(relative_position)
+            relative_velocity = in_body(relative_velocity)
+            target_acceleration = in_body(target_acceleration)
+            ego_velocity = in_body(ego_velocity)
+        relative = relative_position / policy["relative_position_scale_m"]
         if policy["relative_position_encoding"] == "asinh":
             relative = torch.asinh(relative)
         obs = torch.cat(
             (
                 relative,
-                (t.vel - u.vel).float() / policy["relative_velocity_scale_mps"],
-                t.acc / 7.0,
-                u.vel / 50.0,
+                relative_velocity / policy["relative_velocity_scale_mps"],
+                target_acceleration / 7.0,
+                ego_velocity / 50.0,
                 u.rot.flatten(1),
                 u.rate / max(p["rate_xy"], p["rate_yaw"]),
                 (u.thrust / p["hover_thrust"])[:, None],
