@@ -29,6 +29,7 @@ out="$PWD/runs/route_ppo_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$out"
 
 python -m scripts.run_waypoint_curriculum ppo-compare --mode pilot --dry-run
+python -m scripts.run_waypoint_curriculum ppo-compare --check-source
 
 python -m scripts.run_waypoint_curriculum ppo-compare \
   --checkpoint "$ckpt" --out "$out/preflight" --preflight
@@ -42,3 +43,23 @@ tail -f "$out/pilot.log"
 试跑确认后，将 `--out "$out/pilot" --mode pilot` 改为 `--out "$out/confirm" --mode confirm --final-test`，并换一个日志文件。确认阶段从原始 BC 起点重新训练。独立测试种子为 `3690042` 和 `3790042`，测试结果不用于挑选 checkpoint。预检可以用 `--device cpu`，默认使用 CUDA。`--out` 使用尚未创建的目录。
 
 输出中的 `progress.json` 记录整批进度，`summary.csv` 记录配对指标。各组的 `metrics.jsonl` 同时记录沿用采样 batch 和改用训练 batch 时的更新前 log probability 误差。`selection.json` 中的 `update: 0` 表示选择了原始 BC，`final.pt` 表示末次更新的结果。
+
+## 加载 `mixed_bc.pt` 时提示 first-entry-only
+
+`mixed_bc.pt` 使用 `pursuit-direct-ctbr-checkpoint-v4` 格式。出现 `this first-entry-only build does not load old versions` 时，运行目录加载了另一个版本的 `pursuit_rl/ctbr/checkpoint.py`。只复制新脚本到 `main`，或把新脚本提交单独拣选到 `main`，也会出现此错误。在原训练仓库根目录执行以下命令，另建一个完整工作树并沿用原 checkpoint：
+
+```bash
+ckpt="$PWD/runs/waypoint_curriculum_s42/mixed_route_v2/mixed_bc.pt"
+worktree="$(dirname "$PWD")/route-ppo-worktree"
+out="$PWD/runs/route_ppo_preflight_$(date +%Y%m%d_%H%M%S)"
+
+git fetch origin feat/route-ppo-ablation
+git -c core.autocrlf=false worktree add --detach "$worktree" FETCH_HEAD
+cd "$worktree"
+
+python -m scripts.run_waypoint_curriculum ppo-compare --check-source
+python -m scripts.run_waypoint_curriculum ppo-compare \
+  --checkpoint "$ckpt" --out "$out" --preflight
+```
+
+`--check-source` 会在加载 PyTorch 前验证源码指纹。若 `route-ppo-worktree` 已存在，可换一个新目录名。该步骤不需要迁移或重新训练 checkpoint。
