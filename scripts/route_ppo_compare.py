@@ -18,9 +18,44 @@ from scripts.survey_route_profiles import ARC, STATIC, PHASES, route_task
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "configs/experiments/route_ppo_compare.json"
+<<<<<<< HEAD
 ARMS = ("critic_only", "ppo", "ppo_bc")
 EVENT_CODES = dict(success=1, speed=2, outside=3, tilt=4, tracking_failed=5,
                    invalid_target=6, timeout=7)
+=======
+ROUTE_SOURCE_FINGERPRINT = "deaec637e145d3cc87fd94140a2356488bd2995d1a27c1ef33d75d3a59d30229"
+ARMS = ("critic_only", "ppo", "ppo_bc")
+EVENT_CODES = dict(success=1, speed=2, outside=3, tilt=4, tracking_failed=5,
+                   invalid_target=6, timeout=7)
+
+
+class IncompatibleRouteInput(ValueError):
+    """The checkout or checkpoint cannot run this survey comparison."""
+
+
+def check_route_source(root):
+    # Match the v4 checkpoint fingerprint before importing Torch or its loader.
+    digest = hashlib.sha256()
+    paths = [root / "main.py", *(root / "pursuit_rl").rglob("*.py"),
+             *(root / "tests").rglob("*.py")]
+    try:
+        for path in sorted(paths):
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(path.read_bytes())
+    except OSError as error:
+        raise IncompatibleRouteInput(f"Cannot read survey source in {root}: {error}") from error
+    found = digest.hexdigest()
+    if found != ROUTE_SOURCE_FINGERPRINT:
+        raise IncompatibleRouteInput(
+            f"The code in {root} is not the v4 survey implementation required by mixed_bc.pt. "
+            f"Source fingerprint: {found[:12]} (expected {ROUTE_SOURCE_FINGERPRINT[:12]}). "
+            "Run the command in a clean worktree of origin/feat/route-ppo-ablation; "
+            "copying the experiment scripts alone does not install the required implementation."
+        )
+    return found
+
+
+>>>>>>> origin/feat/route-ppo-ablation
 def write_json(path, value):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
@@ -103,12 +138,32 @@ def rank(summary):
 
 
 def run(args, plan):
+<<<<<<< HEAD
     checkpoint = args.checkpoint.resolve(strict=True)
+=======
+    runtime_fingerprint = check_route_source(ROOT)
+    if not args.checkpoint.is_file():
+        raise IncompatibleRouteInput(f"Checkpoint file not found: {args.checkpoint}")
+    checkpoint = args.checkpoint.resolve()
+>>>>>>> origin/feat/route-ppo-ablation
     head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     commit = head.stdout.strip() if head.returncode == 0 else None
     import torch
+<<<<<<< HEAD
     from pursuit_rl.ctbr.checkpoint import load, new_model, save, source_fingerprint
+=======
+    from pursuit_rl.ctbr import checkpoint as checkpoint_io
+
+    expected_loader = ROOT / "pursuit_rl/ctbr/checkpoint.py"
+    actual_loader = Path(checkpoint_io.__file__).resolve()
+    if actual_loader != expected_loader:
+        raise IncompatibleRouteInput(
+            f"Python imported checkpoint.py from {actual_loader}, expected {expected_loader}. "
+            "Check PYTHONPATH and run from the survey worktree."
+        )
+    from pursuit_rl.ctbr.checkpoint import load, new_model, save
+>>>>>>> origin/feat/route-ppo-ablation
     from pursuit_rl.ctbr.config import validate
     from pursuit_rl.ctbr.environment import CTBRBatch
     from pursuit_rl.ctbr.evaluation import evaluate
@@ -121,6 +176,7 @@ def run(args, plan):
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+<<<<<<< HEAD
     teacher, original, saved = load(checkpoint, args.device)
     if (saved["origin"] != "mixed_route_bc" or original["task"]["name"] != ARC
             or original["task"]["kind"] != "circle" or original["task"]["objective"] != "sustained"):
@@ -130,6 +186,19 @@ def run(args, plan):
         raise ValueError(
             "Incompatible checkpoint source. Compare the trainer and test files in this "
             "checkout with the temp revision 07c262e (including LF line endings)."
+=======
+    try:
+        teacher, original, saved = load(checkpoint, args.device)
+    except ValueError as error:
+        raise IncompatibleRouteInput(f"Cannot load {checkpoint}: {error}") from error
+    if (saved["origin"] != "mixed_route_bc" or original["task"]["name"] != ARC
+            or original["task"]["kind"] != "circle" or original["task"]["objective"] != "sustained"):
+        raise IncompatibleRouteInput("Expected the mixed_route_bc checkpoint from the preplanned circular survey")
+    if saved["source_fingerprint"] != runtime_fingerprint:
+        raise IncompatibleRouteInput(
+            f"{checkpoint} was saved by a different source version. "
+            "Use mixed_route_v2/mixed_bc.pt from the v4 survey experiment."
+>>>>>>> origin/feat/route-ppo-ablation
         )
     teacher.eval().requires_grad_(False)
 
@@ -339,9 +408,25 @@ def main(argv=None):
     parser.add_argument("--out", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--dry-run", action="store_true")
+<<<<<<< HEAD
     parser.add_argument("--preflight", action="store_true", help="Verify the checkpoint and baseline without training")
     parser.add_argument("--final-test", action="store_true")
     args = parser.parse_args(argv)
+=======
+    parser.add_argument("--check-source", action="store_true", help="Check checkout compatibility without Torch")
+    parser.add_argument("--preflight", action="store_true", help="Verify the checkpoint and baseline without training")
+    parser.add_argument("--final-test", action="store_true")
+    args = parser.parse_args(argv)
+    if args.check_source:
+        if args.dry_run or args.preflight or args.final_test:
+            parser.error("--check-source runs on its own")
+        try:
+            fingerprint = check_route_source(ROOT)
+        except IncompatibleRouteInput as error:
+            parser.error(str(error))
+        print(f"Survey v4 source verified: {ROOT} ({fingerprint[:12]})")
+        return
+>>>>>>> origin/feat/route-ppo-ablation
     try:
         plan = load_plan(args.plan, args.mode)
     except (OSError, ValueError, TypeError, KeyError) as error:
@@ -356,7 +441,14 @@ def main(argv=None):
         return
     if args.checkpoint is None or args.out is None:
         parser.error("--checkpoint and --out are required for training")
+<<<<<<< HEAD
     run(args, plan)
+=======
+    try:
+        run(args, plan)
+    except IncompatibleRouteInput as error:
+        parser.error(str(error))
+>>>>>>> origin/feat/route-ppo-ablation
 
 
 if __name__ == "__main__":
