@@ -1,6 +1,5 @@
 """Single-vehicle CTBR simulation with a stationary virtual waypoint."""
 
-from dataclasses import dataclass
 from enum import IntEnum
 import math
 
@@ -10,6 +9,7 @@ from pursuit_rl.ctbr.config import DEFAULT
 from pursuit_rl.ctbr.control import thrust_to_action
 from pursuit_rl.simulation.rigid_body import BodyBatch, norm
 from pursuit_rl.simulation.torch_device import resolve_torch_device
+from pursuit_rl.waypoint_plan import WaypointConfig as WaypointConfig
 
 
 SCHEMA = "virtual-waypoint-ctbr-v1"
@@ -24,30 +24,6 @@ class Outcome(IntEnum):
     TILT = 4
     NONFINITE = 5
     TIMEOUT = 7
-
-
-@dataclass(frozen=True)
-class WaypointConfig:
-    radius_m: float = 0.5
-    horizontal_distance_m: tuple[float, float] = (2.0, 5.0)
-    reference_speed_mps: float = 8.0
-    max_speed_mps: float = 10.0
-    timeout_s: float = 6.0
-    decision_ticks: int = 20
-
-    def __post_init__(self):
-        low, high = self.horizontal_distance_m
-        if not all(math.isfinite(x) for x in (
-            self.radius_m, low, high, self.reference_speed_mps,
-            self.max_speed_mps, self.timeout_s,
-        )):
-            raise ValueError("Waypoint settings must be finite")
-        if not 0 < self.radius_m < low <= high <= 20:
-            raise ValueError("Initial horizontal distance must place the vehicle outside the waypoint")
-        if not 0 < self.reference_speed_mps < self.max_speed_mps <= 10:
-            raise ValueError("Require 0 < reference speed < maximum speed <= 10 m/s")
-        if self.timeout_s <= 0 or type(self.decision_ticks) is not int or self.decision_ticks < 1:
-            raise ValueError("Episode and control timings must be positive")
 
 
 class WaypointEnv:

@@ -19,8 +19,28 @@
 报告这两项成本。评估使用确定性策略。并行环境按各回合到达或失败重置，
 训练状态独立于评估环境。先跑测试和 PD 对照，确认基线结果再启动 GPU 消融。
 
+实验计划在 [`configs/experiments/virtual_waypoint.json`](../configs/experiments/virtual_waypoint.json)。
+`task` 管航点、时限和速度，`experiment` 管分组和种子，`ppo` 管更新预算和学习率，
+`teacher` 管示范预算和辅助权重。`stages` 只写相对共享设置的差异：
+
+| 阶段 | 初始水平距离 | 时限 |
+| --- | --- | --- |
+| `near` | 0.75–1.5 m | 6 s |
+| `standard`（默认） | 2–5 m | 6 s |
+| `wide` | 5–8 m | 8 s |
+
+每次启动选一个阶段，独立训练和评估。配置按内置默认值、文件共享设置、阶段覆盖、
+命令行覆盖的顺序合并。`--dry-run` 只打印最终配置，无需安装 PyTorch。运行保存的
+`plan.json` 也可以直接传给 `--plan`，用于复现实验。
+
+```bash
+python -m scripts.run_waypoint_experiments \
+  --plan configs/experiments/virtual_waypoint.json --stage near --dry-run
+```
+
 ```bash
 python -m pip install -e ".[dev]"
+python -m unittest discover -s tests -p test_waypoint_plan.py -v
 python -m unittest discover -s tests -p test_virtual_waypoint.py -v
 
 python -m scripts.run_waypoint_experiments \
@@ -31,13 +51,13 @@ python -m scripts.run_waypoint_experiments \
   --rollout-steps 8 --updates 1 --batch-size 16 --bc-steps 8 --bc-epochs 1
 
 python -m scripts.run_waypoint_experiments \
-  --out runs/waypoint_ablation --device cuda --seeds 42 43 44
+  --plan configs/experiments/virtual_waypoint.json --out runs/waypoint_ablation
 ```
 
 正式消融的 PPO 默认预算是每组每种子 `64 × 128 × 120 = 983,040` 个控制决策。
 示范预训练默认额外采集 16,384 个 PD 控制决策。每组评估 64 个相同的独立回合。
 各训练种子的成功率单独报告。PPO 更新阶段前后使用的评估航点一致，评估结果不参与
-checkpoint 选择。较近的单机航点可通过 `--distance 0.75 1.5` 单独诊断，输出使用新目录。
+checkpoint 选择。原有的 `--distance`、`--updates` 等参数仍可覆盖计划中的值。
 
 每次启动创建一个新的输出目录，其中包含 `plan.json`、`summary.csv` 和
 `progress.json`。进度文件分别记录已完成的实验组和 PPO 更新数。每组还保存逐回合

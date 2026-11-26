@@ -7,7 +7,8 @@ import unittest
 import torch
 
 from pursuit_rl.waypoint import OBS_DIM, Outcome, WaypointConfig, WaypointEnv, waypoint_pd
-from scripts import run_waypoint_experiments as experiments
+from pursuit_rl import waypoint_experiments as experiments
+from scripts.run_waypoint_experiments import main
 
 
 class VirtualWaypointTests(unittest.TestCase):
@@ -60,7 +61,7 @@ class VirtualWaypointTests(unittest.TestCase):
     def test_suite_runs_ppo_bc_and_aux_updates_with_separate_evaluation(self):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp) / "suite"
-            experiments.main([
+            main([
                 "--out", str(out), "--arms", "ppo", "bc_ppo", "aux_ppo",
                 "--episodes", "2", "--envs", "2", "--rollout-steps", "4",
                 "--updates", "1", "--batch-size", "8", "--bc-steps", "4",

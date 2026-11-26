@@ -1,0 +1,41 @@
+{
+  "schema": "virtual-waypoint-experiments-v1",
+  "default_stage": "standard",
+  "task": {
+    "radius_m": 0.5,
+    "horizontal_distance_m": [2.0, 5.0],
+    "reference_speed_mps": 8.0,
+    "max_speed_mps": 10.0,
+    "timeout_s": 6.0,
+    "decision_ticks": 20
+  },
+  "experiment": {
+    "device": "cuda",
+    "arms": ["zero", "pd", "ppo", "bc_ppo", "aux_ppo"],
+    "seeds": [42, 43, 44],
+    "episodes": 64,
+    "evaluation_seed": 9000000,
+    "cpu_threads": 1
+  },
+  "ppo": {
+    "envs": 64,
+    "rollout_steps": 128,
+    "updates": 120,
+    "batch_size": 512,
+    "epochs": 3,
+    "actor_lr": 0.0001,
+    "critic_lr": 0.0003,
+    "gamma": 0.995,
+    "gae_lambda": 0.97
+  },
+  "teacher": {
+    "bc_steps": 256,
+    "bc_epochs": 12,
+    "aux_coef": 0.1
+  },
+  "stages": {
+    "near": {"task": {"horizontal_distance_m": [0.75, 1.5]}},
+    "standard": {},
+    "wide": {"task": {"horizontal_distance_m": [5.0, 8.0], "timeout_s": 8.0}}
+  }
+}
