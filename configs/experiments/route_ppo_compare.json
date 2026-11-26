@@ -4,6 +4,12 @@
     "envs": 32, "rollout_steps": 410, "batch_size": 2048, "epochs": 3,
     "actor_lr": 0.00003, "critic_lr": 0.0001, "bc_coefficient": 0.1
   },
+  "smoke": {
+    "seeds": [42], "updates": 1, "evaluate_every": 1,
+    "warmup": {"episodes": 2, "critic_updates": 2},
+    "training": {"envs": 2, "rollout_steps": 32, "batch_size": 32, "epochs": 1},
+    "evaluation": {"episodes_per_seed": 4}
+  },
   "pilot": {"seeds": [42], "updates": 4, "evaluate_every": 1},
   "confirm": {"seeds": [42, 43, 44], "updates": 16, "evaluate_every": 4},
   "evaluation": {
