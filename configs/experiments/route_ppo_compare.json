@@ -1,0 +1,16 @@
+{
+  "warmup": {"episodes": 8, "critic_updates": 96},
+  "training": {
+    "envs": 32, "rollout_steps": 410, "batch_size": 2048, "epochs": 3,
+    "actor_lr": 0.00003, "critic_lr": 0.0001, "bc_coefficient": 0.1
+  },
+  "pilot": {"seeds": [42], "updates": 4, "evaluate_every": 1},
+  "confirm": {"seeds": [42, 43, 44], "updates": 16, "evaluate_every": 4},
+  "evaluation": {
+    "episodes_per_seed": 32,
+    "validation_seeds": [3290042, 3390042],
+    "test_seeds": [3690042, 3790042],
+    "minimum_joint_rate": 0.984375,
+    "max_tail_rmse_increase_m": 0.005
+  }
+}
