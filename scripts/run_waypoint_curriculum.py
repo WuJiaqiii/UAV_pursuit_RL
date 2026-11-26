@@ -6,28 +6,11 @@ import statistics
 import sys
 from pathlib import Path
 
-import numpy as np
-import torch
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pursuit_rl.ctbr.checkpoint import load as load_checkpoint, write_json
-from pursuit_rl.ctbr.config import load as load_config
-from pursuit_rl.ctbr.evaluation import evaluate
-from pursuit_rl.ctbr.training import train
+from scripts.survey_route_profiles import PHASES, route_task
 
-PHASES = {
-    "01_waypoint": dict(kind="goto", duration=10, tail_seconds=4, speed=[0, 0],
-                        max_accel=0, distance=[0.5, 1.25]),
-    "02_survey_arc": dict(kind="circle", duration=12, tail_seconds=4, speed=[0.7, 0.7],
-                          max_accel=0.2, distance=[0.5, 1.25]),
-    "03_long_arc": dict(kind="circle", duration=20, tail_seconds=4, speed=[0.7, 0.7],
-                        max_accel=0.2, distance=[0.5, 1.25]),
-    "04_offset_start": dict(kind="circle", duration=20, tail_seconds=4, speed=[0.7, 0.7],
-                            max_accel=0.2, distance=[0.5, 1.25], initial_tilt_deg=3,
-                            initial_velocity_noise=0.05),
-}
 GATES = (3290042, 3390042)
 HELD_OUT = (3490042, 3590042)
 EPISODES = 32
@@ -38,7 +21,15 @@ def read(path):
     return json.loads(path.read_text())
 
 
+def write_json(path, value):
+    from pursuit_rl.ctbr.checkpoint import write_json as save_json
+
+    return save_json(path, value)
+
+
 def config(profile, name, device, seed):
+    from pursuit_rl.ctbr.config import load as load_config
+
     return load_config(profile / f"{name}.json", device, seed)
 
 
@@ -50,16 +41,9 @@ def prepare(out, device, seed):
         raise ValueError("Experiment configuration changed. Use a new output directory.")
     write_json(manifest, spec)
     profile = out / "profiles"
-    for name, changes in PHASES.items():
-        task = dict(
-            name=name, objective="sustained", radius=0.45, velocity_tolerance=0.6,
-            maximum_tail_rmse=0.32, minimum_tail_fraction=0.90,
-            initial_tilt_deg=0, initial_velocity_noise=0, match_initial_velocity=True,
-            randomization=0,
-        )
-        task.update(changes)
+    for name in PHASES:
         write_json(profile / f"{name}.json", dict(
-            task=task,
+            task=route_task(name),
             training=dict(bc_updates=0, dagger_rounds=0, transfer_dagger_updates=0,
                           validation_seed=seed + 3100000, validation_episodes=32,
                           validation_every=250000, mc_episodes=8, critic_updates=96,
@@ -71,6 +55,8 @@ def prepare(out, device, seed):
 def evaluate_saved(model, c, seed, path, reference, traces):
     if path.exists():
         return read(path)
+    from pursuit_rl.ctbr.evaluation import evaluate
+
     report, _ = evaluate(model, c, EPISODES, seed, reference=reference,
                          trace_dir=path.parent / str(seed) if traces else None,
                          trace_count=8)
@@ -98,6 +84,8 @@ def summarize(report):
 
 
 def assessments(c, checkpoint, root, seeds, expected=None, traces=False):
+    from pursuit_rl.ctbr.checkpoint import load as load_checkpoint
+
     model = load_checkpoint(checkpoint, c["device"])[0] if checkpoint else None
     results = []
     for seed in seeds:
@@ -124,6 +112,8 @@ def score(reports):
 def fit(c, directory, steps, parent=None, bc=False):
     summary = directory / "training_summary.json"
     if not summary.exists():
+        from pursuit_rl.ctbr.training import train
+
         c["training"]["physics_steps"] = steps
         if bc:
             c["training"].update(bc_samples=48000, bc_updates=2000, bc_segment_seconds=2,
@@ -146,12 +136,24 @@ def evaluate_heldout(profile, out, names, candidates, device, seed):
                         expected=expected, traces=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "ppo-compare":
+        from scripts.route_ppo_compare import main as compare_main
+
+        return compare_main(argv[1:])
+
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Use ppo-compare --help for the paired PPO experiment.",
+    )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", default=42, type=int)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    import torch
+
     torch.set_num_threads(1)
     args.out = args.out.resolve()
     profile = prepare(args.out, args.device, args.seed)
