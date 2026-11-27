@@ -1,6 +1,6 @@
 {
   "v15/eval.py": "d390772dd5ee5b67d8f19c1945c53dbae6abe3ca317bcea192fb306dbb99496e",
-  "v15/core.py": "4b0a72fdd3d8a10c0e3d3ac6bae994ee829847a8fde86186c792357c6340a353",
+  "v15/core.py": "1d5bfc8d72ff4c43d08dfa688841f3a1aac90a3c3fcf1b3a5f8eb9c2f49f9366",
   "v15/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "v15/envs.py": "f66c914445e091bab10629ef86332b709eb0a367e323c943fa3f311375f634d6",
   "v18/study.py": "e2640929fa8576a6594cbf70cb6200faa3ce0416f3bac7539683d8c8dbd3ebc3",
@@ -16,5 +16,6 @@
   "tests/test_v17.py": "532291d022204d51f19af1f3fcc7fd19c51dfb13795ce0613d9586656c48e6ae",
   "tests/test_v18.py": "6ab9062e350d960de83ea6cb4c8e1abda6d499ac22bdea6dc8537c5b5a4f6558",
   "tests/test_v15_core.py": "f7f7d8bef4c6ca89f663a07652bb65f15fb229bc54eb11eb909c3159c45290ad",
-  "tests/test_v16.py": "516ce11816e4b2da1d1a4048b4bf6b1e5d1a25b74015933e40ece978f4dff6fb"
+  "tests/test_v16.py": "516ce11816e4b2da1d1a4048b4bf6b1e5d1a25b74015933e40ece978f4dff6fb",
+  "tests/test_legacy_core.py": "099e864f32ecf8694893e1c372eeec15e78700eef6e616fc2d6618db6ac12851"
 }
